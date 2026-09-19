@@ -1,6 +1,6 @@
 """
 ffmpeg_core.py
-Core binary detection and ffprobe metadata extraction.
+Core binary detection, ffprobe metadata extraction, and progress parsing.
 Zero GUI imports.
 """
 
@@ -9,7 +9,7 @@ import shutil
 import json
 import subprocess
 from pathlib import Path
-from typing import NamedTuple, Optional
+from typing import NamedTuple, Optional, List, Dict
 
 
 class BinaryDetectionResult(NamedTuple):
@@ -28,7 +28,6 @@ class VideoMetadata(NamedTuple):
 
     @property
     def formatted_size(self) -> str:
-        """Returns human-readable size (e.g. '3.12 GB' or '450.2 MB')."""
         bytes_val = float(self.file_size_bytes)
         if bytes_val >= 1024 ** 3:
             return f"{bytes_val / (1024 ** 3):.2f} GB"
@@ -36,7 +35,6 @@ class VideoMetadata(NamedTuple):
 
     @property
     def formatted_duration(self) -> str:
-        """Returns HH:MM:SS format."""
         total_seconds = int(self.duration_seconds)
         hours = total_seconds // 3600
         minutes = (total_seconds % 3600) // 60
@@ -52,7 +50,42 @@ class VideoMetadata(NamedTuple):
         return "Unknown"
 
 
+def format_bytes(num_bytes: int) -> str:
+    b = float(num_bytes)
+    if b >= 1024 ** 3:
+        return f"{b / (1024 ** 3):.2f} GB"
+    return f"{b / (1024 ** 2):.1f} MB"
+
+
+def format_seconds(seconds_val: float) -> str:
+    total_seconds = max(0, int(seconds_val))
+    hours = total_seconds // 3600
+    minutes = (total_seconds % 3600) // 60
+    seconds = total_seconds % 60
+    if hours > 0:
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+    return f"{minutes:02d}:{seconds:02d}"
+
+
+def parse_time_str_to_seconds(time_str: str) -> float:
+    """Parses 'HH:MM:SS.micro' string from ffmpeg into float seconds."""
+    try:
+        parts = time_str.split(":")
+        if len(parts) == 3:
+            h = float(parts[0])
+            m = float(parts[1])
+            s = float(parts[2])
+            return h * 3600 + m * 60 + s
+    except Exception:
+        pass
+    return 0.0
+
+
 def locate_binaries(custom_ffmpeg_path: Optional[str] = None) -> BinaryDetectionResult:
+    """
+    Locates ffmpeg.exe and ffprobe.exe on the system.
+    Prioritizes full Gyan.FFmpeg installations over stripped down tools (like scrcpy).
+    """
     ffmpeg_path: Optional[str] = None
     ffprobe_path: Optional[str] = None
 
@@ -63,18 +96,7 @@ def locate_binaries(custom_ffmpeg_path: Optional[str] = None) -> BinaryDetection
         if os.path.isfile(candidate_probe):
             ffprobe_path = candidate_probe
 
-    # 2. Check System PATH
-    if not ffmpeg_path:
-        found_ffmpeg = shutil.which("ffmpeg")
-        if found_ffmpeg:
-            ffmpeg_path = os.path.abspath(found_ffmpeg)
-
-    if not ffprobe_path:
-        found_probe = shutil.which("ffprobe")
-        if found_probe:
-            ffprobe_path = os.path.abspath(found_probe)
-
-    # 3. Check WinGet Gyan.FFmpeg installation directory
+    # 2. Prioritize Gyan.FFmpeg WinGet package specifically
     if not ffmpeg_path or not ffprobe_path:
         local_app_data = os.environ.get("LOCALAPPDATA")
         if local_app_data:
@@ -92,14 +114,21 @@ def locate_binaries(custom_ffmpeg_path: Optional[str] = None) -> BinaryDetection
                     if ffmpeg_path and ffprobe_path:
                         break
 
+    # 3. Check System PATH as fallback
+    if not ffmpeg_path:
+        found_ffmpeg = shutil.which("ffmpeg")
+        if found_ffmpeg:
+            ffmpeg_path = os.path.abspath(found_ffmpeg)
+
+    if not ffprobe_path:
+        found_probe = shutil.which("ffprobe")
+        if found_probe:
+            ffprobe_path = os.path.abspath(found_probe)
+
     return BinaryDetectionResult(ffmpeg_path=ffmpeg_path, ffprobe_path=ffprobe_path)
 
 
 def probe_video(ffprobe_path: str, video_path: str) -> VideoMetadata:
-    """
-    Executes ffprobe to extract structural video metadata.
-    Raises RuntimeError or FileNotFoundError on failure.
-    """
     if not os.path.isfile(video_path):
         raise FileNotFoundError(f"Input video file not found: {video_path}")
 
@@ -115,7 +144,6 @@ def probe_video(ffprobe_path: str, video_path: str) -> VideoMetadata:
         video_path,
     ]
 
-    # Prevent console popup window on Windows
     startupinfo = None
     if os.name == "nt":
         startupinfo = subprocess.STARTUPINFO()
@@ -138,7 +166,6 @@ def probe_video(ffprobe_path: str, video_path: str) -> VideoMetadata:
     format_data = data.get("format", {})
     streams = data.get("streams", [])
 
-    # Find the primary video stream
     width = 0
     height = 0
     codec_name = "unknown"
@@ -156,14 +183,12 @@ def probe_video(ffprobe_path: str, video_path: str) -> VideoMetadata:
                     pass
             break
 
-    # Determine duration: prefer format.duration, fallback to stream.duration
     duration = 0.0
     try:
         duration = float(format_data.get("duration", stream_duration))
     except (ValueError, TypeError):
         duration = stream_duration
 
-    # Determine total file size
     size_bytes = os.path.getsize(video_path)
     try:
         format_size = int(format_data.get("size", size_bytes))
@@ -180,3 +205,26 @@ def probe_video(ffprobe_path: str, video_path: str) -> VideoMetadata:
         height=height,
         codec_name=codec_name,
     )
+
+
+def build_ffmpeg_args(input_path: str, output_path: str, crf: int) -> List[str]:
+    return [
+        "-y",
+        "-nostats",
+        "-progress", "pipe:1",
+        "-i", input_path,
+        "-c:v", "libx264",
+        "-crf", str(crf),
+        "-preset", "medium",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac",
+        "-b:a", "128k",
+        output_path,
+    ]
+
+
+def parse_progress_line(line: str) -> Dict[str, str]:
+    if "=" in line:
+        key, value = line.split("=", 1)
+        return {key.strip(): value.strip()}
+    return {}
