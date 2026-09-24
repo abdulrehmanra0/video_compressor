@@ -1,13 +1,14 @@
 """
 main.py
-PySide6 application entry point and complete v0.1 UI with QProcess execution,
-clean card layout without clipping, instant cancellation, and automatic partial file deletion.
+PySide6 application entry point with v0.2 Smart Target Size engine,
+feasibility health gauge, dynamic auto-downscaling, QProcess execution,
+and dark-themed readable popup dialogs.
 """
 
 import sys
 import os
 from PySide6.QtCore import Qt, QProcess, QUrl, QTimer
-from PySide6.QtGui import QDragEnterEvent, QDropEvent, QDesktopServices
+from PySide6.QtGui import QDragEnterEvent, QDropEvent, QDesktopServices, QDoubleValidator
 from PySide6.QtWidgets import (
     QApplication,
     QMainWindow,
@@ -25,18 +26,23 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QScrollArea,
     QPlainTextEdit,
+    QTabWidget,
+    QCheckBox,
 )
 
 from ffmpeg_core import (
     locate_binaries,
     probe_video,
-    build_ffmpeg_args,
+    build_crf_args,
+    build_target_size_args,
+    calculate_target_bitrate,
     parse_progress_line,
     parse_time_str_to_seconds,
     format_bytes,
     format_seconds,
     BinaryDetectionResult,
     VideoMetadata,
+    TargetSizeCalculation,
 )
 
 
@@ -60,8 +66,33 @@ QWidget {
     font-size: 13px;
 }
 
-/* Card frames styled without CSS padding to prevent label clipping */
-QFrame#statusCard, QFrame#dropCard, QFrame#infoCard, QFrame#presetCard, QFrame#outputCard, QFrame#progressCard, QFrame#logCard {
+/* Styled MessageBox for Dark Mode */
+QMessageBox {
+    background-color: #1A1C23;
+    border: 1px solid #2D3139;
+}
+
+QMessageBox QLabel {
+    color: #F8FAFC;
+    font-size: 13px;
+    line-height: 1.5;
+}
+
+QMessageBox QPushButton {
+    background-color: #2563EB;
+    color: #FFFFFF;
+    border: none;
+    border-radius: 6px;
+    padding: 6px 18px;
+    min-width: 65px;
+    font-weight: 600;
+}
+
+QMessageBox QPushButton:hover {
+    background-color: #1D4ED8;
+}
+
+QFrame#statusCard, QFrame#dropCard, QFrame#infoCard, QFrame#compressModeCard, QFrame#outputCard, QFrame#progressCard, QFrame#logCard {
     background-color: #1A1C23;
     border: 1px solid #2D3139;
     border-radius: 8px;
@@ -75,6 +106,12 @@ QFrame#dropCard {
 QFrame#dropCard:hover {
     border-color: #3B82F6;
     background-color: #181B24;
+}
+
+QFrame#gaugeBox {
+    background-color: #0F1115;
+    border: 1px solid #2E3440;
+    border-radius: 6px;
 }
 
 QLabel#titleLabel {
@@ -104,10 +141,21 @@ QLabel#statusBadgeSuccess {
     color: #6EE7B7;
     border: 1px solid #059669;
     border-radius: 4px;
-    padding: 2px 8px;
-    font-weight: 600;
+    padding: 3px 10px;
+    font-weight: 700;
     font-size: 11px;
-    min-height: 16px;
+    min-height: 18px;
+}
+
+QLabel#statusBadgeWarning {
+    background-color: #78350F;
+    color: #FCD34D;
+    border: 1px solid #D97706;
+    border-radius: 4px;
+    padding: 3px 10px;
+    font-weight: 700;
+    font-size: 11px;
+    min-height: 18px;
 }
 
 QLabel#statusBadgeError {
@@ -115,10 +163,10 @@ QLabel#statusBadgeError {
     color: #FCA5A5;
     border: 1px solid #DC2626;
     border-radius: 4px;
-    padding: 2px 8px;
-    font-weight: 600;
+    padding: 3px 10px;
+    font-weight: 700;
     font-size: 11px;
-    min-height: 16px;
+    min-height: 18px;
 }
 
 QLabel#metaKeyLabel {
@@ -186,6 +234,23 @@ QPushButton#secondaryBtn:hover {
     background-color: #323744;
 }
 
+QPushButton#chipBtn {
+    background-color: #20242F;
+    color: #CBD5E1;
+    border: 1px solid #333948;
+    border-radius: 13px;
+    padding: 4px 12px;
+    font-size: 11px;
+    font-weight: 500;
+    min-height: 18px;
+}
+
+QPushButton#chipBtn:hover {
+    background-color: #2A303F;
+    border-color: #3B82F6;
+    color: #FFFFFF;
+}
+
 QPushButton#cancelBtn {
     background-color: #7F1D1D;
     color: #FCA5A5;
@@ -198,7 +263,32 @@ QPushButton#cancelBtn:hover {
     background-color: #991B1B;
 }
 
-QRadioButton {
+QTabWidget::pane {
+    border: 1px solid #2D3139;
+    border-radius: 6px;
+    background-color: #15171E;
+}
+
+QTabBar::tab {
+    background-color: #1A1C23;
+    color: #94A3B8;
+    border: 1px solid #2D3139;
+    border-bottom: none;
+    border-top-left-radius: 6px;
+    border-top-right-radius: 6px;
+    padding: 7px 18px;
+    font-weight: 500;
+    margin-right: 2px;
+}
+
+QTabBar::tab:selected {
+    background-color: #15171E;
+    color: #60A5FA;
+    border-color: #2D3139;
+    font-weight: 600;
+}
+
+QRadioButton, QCheckBox {
     spacing: 8px;
     color: #CBD5E1;
     font-weight: 500;
@@ -252,13 +342,14 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Video Compressor")
-        self.resize(780, 820)
+        self.resize(780, 860)
         self.setMinimumSize(640, 600)
 
         self.setAcceptDrops(True)
 
         self.detection: BinaryDetectionResult = BinaryDetectionResult(None, None)
         self.current_metadata: VideoMetadata | None = None
+        self.current_calc: TargetSizeCalculation | None = None
 
         self.process: QProcess | None = None
         self.is_compressing = False
@@ -289,7 +380,7 @@ class MainWindow(QMainWindow):
         title = QLabel("Video Compressor", self)
         title.setObjectName("titleLabel")
         header_layout.addWidget(title)
-        subtitle = QLabel("Desktop meeting & media compressor (v0.1)", self)
+        subtitle = QLabel("Desktop meeting & media compressor (v0.2 with Smart Target Size)", self)
         subtitle.setObjectName("subtitleLabel")
         header_layout.addWidget(subtitle)
         root_layout.addLayout(header_layout)
@@ -333,7 +424,7 @@ class MainWindow(QMainWindow):
         self.drop_card = QFrame(self)
         self.drop_card.setObjectName("dropCard")
         drop_layout = QVBoxLayout(self.drop_card)
-        drop_layout.setContentsMargins(20, 22, 20, 22)
+        drop_layout.setContentsMargins(20, 20, 20, 20)
         drop_layout.setSpacing(8)
         drop_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
@@ -382,16 +473,96 @@ class MainWindow(QMainWindow):
         self.info_card.setVisible(False)
         root_layout.addWidget(self.info_card)
 
-        # 4. Quality Presets Card
-        preset_card = QFrame(self)
-        preset_card.setObjectName("presetCard")
-        preset_layout = QVBoxLayout(preset_card)
-        preset_layout.setContentsMargins(16, 14, 16, 14)
-        preset_layout.setSpacing(10)
+        # 4. Compression Mode (Tabs: Smart Target Size vs CRF Quality)
+        compress_mode_card = QFrame(self)
+        compress_mode_card.setObjectName("compressModeCard")
+        cm_layout = QVBoxLayout(compress_mode_card)
+        cm_layout.setContentsMargins(16, 14, 16, 14)
+        cm_layout.setSpacing(10)
 
-        preset_title = QLabel("Compression Quality Preset", self)
-        preset_title.setObjectName("sectionHeader")
-        preset_layout.addWidget(preset_title)
+        cm_title = QLabel("Compression Mode", self)
+        cm_title.setObjectName("sectionHeader")
+        cm_layout.addWidget(cm_title)
+
+        self.tab_widget = QTabWidget(self)
+
+        # --- Tab 1: Smart Target Size ---
+        tab_target = QWidget()
+        target_layout = QVBoxLayout(tab_target)
+        target_layout.setContentsMargins(12, 14, 12, 14)
+        target_layout.setSpacing(12)
+
+        # Target input row
+        target_input_row = QHBoxLayout()
+        target_input_row.setSpacing(10)
+
+        lbl_target = QLabel("Target Size (MB):", self)
+        lbl_target.setStyleSheet("font-weight: 600; color: #E2E8F0;")
+        target_input_row.addWidget(lbl_target)
+
+        self.txt_target_mb = QLineEdit(self)
+        self.txt_target_mb.setFixedWidth(80)
+        self.txt_target_mb.setText("450")
+        self.txt_target_mb.setValidator(QDoubleValidator(0.5, 50000.0, 1, self))
+        self.txt_target_mb.textChanged.connect(self._recalculate_target_size)
+        target_input_row.addWidget(self.txt_target_mb)
+
+        chip_free = QPushButton("500 MB (Cloud Free)", self)
+        chip_free.setObjectName("chipBtn")
+        chip_free.clicked.connect(lambda: self.txt_target_mb.setText("450"))
+        target_input_row.addWidget(chip_free)
+
+        chip_100 = QPushButton("100 MB", self)
+        chip_100.setObjectName("chipBtn")
+        chip_100.clicked.connect(lambda: self.txt_target_mb.setText("95"))
+        target_input_row.addWidget(chip_100)
+
+        chip_discord = QPushButton("25 MB (Discord)", self)
+        chip_discord.setObjectName("chipBtn")
+        chip_discord.clicked.connect(lambda: self.txt_target_mb.setText("24"))
+        target_input_row.addWidget(chip_discord)
+
+        chip_email = QPushButton("10 MB (Email)", self)
+        chip_email.setObjectName("chipBtn")
+        chip_email.clicked.connect(lambda: self.txt_target_mb.setText("9.5"))
+        target_input_row.addWidget(chip_email)
+
+        target_input_row.addStretch()
+        target_layout.addLayout(target_input_row)
+
+        # Auto downscale checkbox
+        self.chk_auto_downscale = QCheckBox("Auto-adjust resolution if target bitrate is tight (keeps video sharp)", self)
+        self.chk_auto_downscale.setChecked(True)
+        self.chk_auto_downscale.stateChanged.connect(self._recalculate_target_size)
+        target_layout.addWidget(self.chk_auto_downscale)
+
+        # Feasibility Gauge display box
+        self.gauge_box = QFrame(self)
+        self.gauge_box.setObjectName("gaugeBox")
+        gb_layout = QHBoxLayout(self.gauge_box)
+        gb_layout.setContentsMargins(14, 10, 14, 10)
+        gb_layout.setSpacing(12)
+
+        self.badge_health = QLabel("FEASIBILITY", self)
+        self.badge_health.setObjectName("statusBadgeSuccess")
+        self.badge_health.setFixedWidth(105)
+        self.badge_health.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        gb_layout.addWidget(self.badge_health)
+
+        self.lbl_health_msg = QLabel("Load a video to see bitrate feasibility", self)
+        self.lbl_health_msg.setStyleSheet("color: #E2E8F0; font-size: 12px; font-weight: 500;")
+        self.lbl_health_msg.setWordWrap(True)
+        gb_layout.addWidget(self.lbl_health_msg, stretch=1)
+
+        target_layout.addWidget(self.gauge_box)
+
+        self.tab_widget.addTab(tab_target, "Smart Target Size (MB)")
+
+        # --- Tab 2: CRF Quality Presets ---
+        tab_crf = QWidget()
+        crf_layout = QVBoxLayout(tab_crf)
+        crf_layout.setContentsMargins(12, 14, 12, 14)
+        crf_layout.setSpacing(10)
 
         radio_layout = QHBoxLayout()
         radio_layout.setSpacing(20)
@@ -411,8 +582,11 @@ class MainWindow(QMainWindow):
         radio_layout.addWidget(self.rb_small)
         radio_layout.addStretch()
 
-        preset_layout.addLayout(radio_layout)
-        root_layout.addWidget(preset_card)
+        crf_layout.addLayout(radio_layout)
+        self.tab_widget.addTab(tab_crf, "Quality Presets (CRF)")
+
+        cm_layout.addWidget(self.tab_widget)
+        root_layout.addWidget(compress_mode_card)
 
         # 5. Output Destination Card
         output_card = QFrame(self)
@@ -477,7 +651,6 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(0)
         prog_layout.addWidget(self.progress_bar)
 
-        # Results area
         self.results_box = QWidget(self)
         res_layout = QVBoxLayout(self.results_box)
         res_layout.setContentsMargins(0, 4, 0, 0)
@@ -633,8 +806,65 @@ class MainWindow(QMainWindow):
             self.results_box.setVisible(False)
             self.log_card.setVisible(False)
 
+            self._recalculate_target_size()
+
         except Exception as err:
             QMessageBox.critical(self, "Inspection Error", f"Could not read video metadata:\n{str(err)}")
+
+    def _recalculate_target_size(self):
+        """Updates the Feasibility Gauge live as the user modifies target MB or loads video."""
+        if not self.current_metadata:
+            self.badge_health.setText("NO VIDEO")
+            self.badge_health.setObjectName("statusBadgeWarning")
+            self.lbl_health_msg.setText("Load a video to see bitrate feasibility.")
+            self._refresh_gauge_style()
+            return
+
+        try:
+            text_val = self.txt_target_mb.text().strip()
+            if not text_val:
+                self.badge_health.setText("EMPTY")
+                self.badge_health.setObjectName("statusBadgeWarning")
+                self.lbl_health_msg.setText("Enter a target size in MB.")
+                self._refresh_gauge_style()
+                return
+
+            target_mb = float(text_val)
+        except ValueError:
+            self.badge_health.setText("INVALID")
+            self.badge_health.setObjectName("statusBadgeError")
+            self.lbl_health_msg.setText("Please enter a valid numeric size in MB.")
+            self._refresh_gauge_style()
+            return
+
+        calc = calculate_target_bitrate(
+            target_mb=target_mb,
+            duration_seconds=self.current_metadata.duration_seconds,
+            width=self.current_metadata.width,
+            height=self.current_metadata.height,
+        )
+        self.current_calc = calc
+
+        if calc.status == "optimal":
+            self.badge_health.setText("OPTIMAL")
+            self.badge_health.setObjectName("statusBadgeSuccess")
+        elif calc.status == "tight":
+            self.badge_health.setText("TIGHT")
+            self.badge_health.setObjectName("statusBadgeWarning")
+        else:
+            self.badge_health.setText("IMPRACTICAL")
+            self.badge_health.setObjectName("statusBadgeError")
+
+        msg = calc.status_message
+        if self.chk_auto_downscale.isChecked() and calc.recommended_scale:
+            msg += f" (Auto-scaling to {calc.recommended_scale.split(':')[0]}p enabled)"
+
+        self.lbl_health_msg.setText(msg)
+        self._refresh_gauge_style()
+
+    def _refresh_gauge_style(self):
+        self.badge_health.style().unpolish(self.badge_health)
+        self.badge_health.style().polish(self.badge_health)
 
     def _on_change_output(self):
         current_val = self.txt_output_path.text().strip()
@@ -663,11 +893,34 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Warning", "Output destination cannot be identical to the input file.")
             return
 
-        crf_value = self.preset_group.checkedId()
-        if crf_value == -1:
-            crf_value = 28
+        is_target_mode = (self.tab_widget.currentIndex() == 0)
 
-        args = build_ffmpeg_args(self.current_metadata.file_path, output_path, crf_value)
+        if is_target_mode:
+            self._recalculate_target_size()
+            if not self.current_calc or not self.current_calc.is_feasible:
+                reply = QMessageBox.warning(
+                    self,
+                    "Low Bitrate Warning",
+                    f"{self.lbl_health_msg.text()}\n\nDo you still wish to proceed with encoding?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
+                )
+                if reply == QMessageBox.StandardButton.No:
+                    return
+
+            scale = self.current_calc.recommended_scale if self.chk_auto_downscale.isChecked() else None
+            args = build_target_size_args(
+                input_path=self.current_metadata.file_path,
+                output_path=output_path,
+                video_kbps=self.current_calc.video_bitrate_kbps,
+                audio_kbps=self.current_calc.audio_bitrate_kbps,
+                scale=scale,
+            )
+        else:
+            crf_value = self.preset_group.checkedId()
+            if crf_value == -1:
+                crf_value = 28
+            args = build_crf_args(self.current_metadata.file_path, output_path, crf_value)
 
         self.target_output_file = output_path
         self.was_cancelled = False
@@ -762,7 +1015,6 @@ class MainWindow(QMainWindow):
             )
 
     def _cancel_compression(self):
-        """Immediately terminates FFmpeg and triggers asynchronous file cleanup."""
         if not self.process:
             return
 
@@ -770,15 +1022,9 @@ class MainWindow(QMainWindow):
         self.btn_cancel.setEnabled(False)
         self.lbl_progress_status.setText("Cancelling...")
         self.log_console.appendPlainText("\n[USER CANCELLED] Terminating FFmpeg process immediately...")
-
-        # Kill the process
         self.process.kill()
 
     def _cleanup_partial_output_file(self, attempt: int = 1):
-        """
-        Deletes the unplayable partial output file after FFmpeg has completely exited.
-        Retries up to 5 times if Windows temporarily holds the file handle lock.
-        """
         if not self.target_output_file:
             return
 
@@ -788,7 +1034,6 @@ class MainWindow(QMainWindow):
                 self.log_console.appendPlainText(f"[CLEANUP] Successfully deleted corrupted partial file: {self.target_output_file}")
             except OSError as err:
                 if attempt < 6:
-                    # Windows kernel may hold the file lock for a split-second; retry after 200ms
                     QTimer.singleShot(200, lambda: self._cleanup_partial_output_file(attempt + 1))
                 else:
                     self.log_console.appendPlainText(f"[CLEANUP ERROR] Could not delete file: {err}")
@@ -797,14 +1042,12 @@ class MainWindow(QMainWindow):
         self.is_compressing = False
         self._reset_ui_after_run()
 
-        # Handle user cancellation
         if self.was_cancelled:
             self.lbl_progress_status.setText("Compression cancelled.")
             self.progress_bar.setValue(0)
             self._cleanup_partial_output_file()
             return
 
-        # Handle successful completion
         if exit_code == 0 and os.path.isfile(self.target_output_file):
             self.progress_bar.setValue(100)
             self.lbl_progress_status.setText("Compression complete!")
@@ -823,7 +1066,6 @@ class MainWindow(QMainWindow):
             self.results_box.setVisible(True)
             self.log_console.appendPlainText(f"\n[FINISHED] Success! Output saved to: {self.target_output_file}")
 
-        # Handle error
         else:
             self.lbl_progress_status.setText("Encoding failed.")
             self.log_console.appendPlainText(f"\n[ERROR] FFmpeg exited with code {exit_code}")
