@@ -1,16 +1,22 @@
 """
 ffmpeg_core.py
 Core binary detection, ffprobe metadata extraction, progress parsing,
-and intelligent target file size bitrate calculation.
+intelligent target file size bitrate calculation, and automated FFmpeg downloader.
 Zero GUI imports.
 """
 
 import os
+import sys
 import shutil
 import json
+import zipfile
+import urllib.request
 import subprocess
 from pathlib import Path
-from typing import NamedTuple, Optional, List, Dict
+from typing import NamedTuple, Optional, List, Dict, Callable
+
+# Official Gyan.dev essentials zip URL (lightweight build with full x264/x265/audio support)
+FFMPEG_DOWNLOAD_URL = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
 
 
 class BinaryDetectionResult(NamedTuple):
@@ -63,6 +69,15 @@ class TargetSizeCalculation(NamedTuple):
     is_feasible: bool
 
 
+def get_local_bin_dir() -> Path:
+    """Returns the app's local dedicated bin directory for downloaded binaries."""
+    # Place bin/ relative to this script directory
+    base_dir = Path(__file__).resolve().parent
+    bin_dir = base_dir / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    return bin_dir
+
+
 def format_bytes(num_bytes: int) -> str:
     b = float(num_bytes)
     if b >= 1024 ** 3:
@@ -93,16 +108,49 @@ def parse_time_str_to_seconds(time_str: str) -> float:
     return 0.0
 
 
+# def locate_binaries(custom_ffmpeg_path: Optional[str] = None) -> BinaryDetectionResult:
+#     """
+#     Locates ffmpeg.exe and ffprobe.exe using the following priority:
+#     1. Custom path provided by user.
+#     2. Local app bin directory (bin/ffmpeg.exe).
+#     3. WinGet Gyan.FFmpeg package directory.
+#     4. System PATH.
+#     """
+#     ffmpeg_path: Optional[str] = None
+#     ffprobe_path: Optional[str] = None
+
 def locate_binaries(custom_ffmpeg_path: Optional[str] = None) -> BinaryDetectionResult:
+    """
+    Locates ffmpeg.exe and ffprobe.exe using the following priority:
+    1. Custom path provided by user.
+    2. Local app bin directory (bin/ffmpeg.exe).
+    3. WinGet Gyan.FFmpeg package directory.
+    4. System PATH.
+    """
+    return BinaryDetectionResult(ffmpeg_path=None, ffprobe_path=None)  # TEMPORARY TEST — simulates no FFmpeg found
+
     ffmpeg_path: Optional[str] = None
     ffprobe_path: Optional[str] = None
+    # ... rest of the function stays untouched below this
 
+    # 1. Custom path
     if custom_ffmpeg_path and os.path.isfile(custom_ffmpeg_path):
         ffmpeg_path = os.path.abspath(custom_ffmpeg_path)
         candidate_probe = os.path.join(os.path.dirname(ffmpeg_path), "ffprobe.exe")
         if os.path.isfile(candidate_probe):
             ffprobe_path = candidate_probe
 
+    # 2. Local app bin folder (where auto-downloader saves them)
+    if not ffmpeg_path or not ffprobe_path:
+        local_bin = get_local_bin_dir()
+        local_ffmpeg = local_bin / "ffmpeg.exe"
+        local_ffprobe = local_bin / "ffprobe.exe"
+        if local_ffmpeg.is_file():
+            ffmpeg_path = str(local_ffmpeg.resolve())
+        if local_ffprobe.is_file():
+            ffprobe_path = str(local_ffprobe.resolve())
+
+    # 3. WinGet package directory
     if not ffmpeg_path or not ffprobe_path:
         local_app_data = os.environ.get("LOCALAPPDATA")
         if local_app_data:
@@ -120,6 +168,7 @@ def locate_binaries(custom_ffmpeg_path: Optional[str] = None) -> BinaryDetection
                     if ffmpeg_path and ffprobe_path:
                         break
 
+    # 4. System PATH
     if not ffmpeg_path:
         found_ffmpeg = shutil.which("ffmpeg")
         if found_ffmpeg:
@@ -131,6 +180,85 @@ def locate_binaries(custom_ffmpeg_path: Optional[str] = None) -> BinaryDetection
             ffprobe_path = os.path.abspath(found_probe)
 
     return BinaryDetectionResult(ffmpeg_path=ffmpeg_path, ffprobe_path=ffprobe_path)
+
+
+def download_and_extract_ffmpeg(
+    progress_callback: Optional[Callable[[int, int, str], None]] = None,
+    is_cancelled_func: Optional[Callable[[], bool]] = None,
+) -> BinaryDetectionResult:
+    """
+    Downloads FFmpeg essentials zip directly from gyan.dev and extracts ffmpeg.exe
+    and ffprobe.exe into the local bin/ folder.
+    - progress_callback(downloaded_bytes, total_bytes, status_text)
+    - is_cancelled_func() -> bool
+    """
+    bin_dir = get_local_bin_dir()
+    zip_temp_path = bin_dir / "ffmpeg_temp.zip"
+
+    # User-Agent header is required by some CDNs to prevent 403 Forbidden
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) VideoCompressorAutoDownloader/1.0"
+    }
+    req = urllib.request.Request(FFMPEG_DOWNLOAD_URL, headers=headers)
+
+    if progress_callback:
+        progress_callback(0, 0, "Connecting to official FFmpeg server...")
+
+    with urllib.request.urlopen(req, timeout=30) as response:
+        total_size = int(response.headers.get("content-length", 0))
+        downloaded = 0
+        chunk_size = 1024 * 128  # 128 KB chunks
+
+        with open(zip_temp_path, "wb") as out_file:
+            while True:
+                if is_cancelled_func and is_cancelled_func():
+                    out_file.close()
+                    if zip_temp_path.exists():
+                        zip_temp_path.unlink()
+                    raise InterruptedError("Download was cancelled by user.")
+
+                chunk = response.read(chunk_size)
+                if not chunk:
+                    break
+
+                out_file.write(chunk)
+                downloaded += len(chunk)
+
+                if progress_callback:
+                    progress_callback(downloaded, total_size, "Downloading FFmpeg...")
+
+    if progress_callback:
+        progress_callback(downloaded, total_size, "Extracting binaries...")
+
+    # Extract only ffmpeg.exe and ffprobe.exe into bin_dir
+    extracted_ffmpeg: Optional[Path] = None
+    extracted_ffprobe: Optional[Path] = None
+
+    with zipfile.ZipFile(zip_temp_path, "r") as z:
+        for file_info in z.infolist():
+            filename = os.path.basename(file_info.filename).lower()
+            if filename in ("ffmpeg.exe", "ffprobe.exe"):
+                # Extract file contents into destination
+                dest_path = bin_dir / filename
+                with z.open(file_info) as source, open(dest_path, "wb") as target:
+                    shutil.copyfileobj(source, target)
+
+                if filename == "ffmpeg.exe":
+                    extracted_ffmpeg = dest_path
+                elif filename == "ffprobe.exe":
+                    extracted_ffprobe = dest_path
+
+    # Clean up the zip file
+    if zip_temp_path.exists():
+        zip_temp_path.unlink()
+
+    if not extracted_ffmpeg or not extracted_ffmpeg.exists():
+        raise FileNotFoundError("Could not find ffmpeg.exe inside the downloaded archive.")
+
+    return BinaryDetectionResult(
+        ffmpeg_path=str(extracted_ffmpeg.resolve()) if extracted_ffmpeg else None,
+        ffprobe_path=str(extracted_ffprobe.resolve()) if extracted_ffprobe else None,
+    )
 
 
 def probe_video(ffprobe_path: str, video_path: str) -> VideoMetadata:
@@ -219,10 +347,6 @@ def calculate_target_bitrate(
     height: int = 1080,
     fps: float = 30.0,
 ) -> TargetSizeCalculation:
-    """
-    Computes required video & audio bitrates and checks theoretical feasibility.
-    Properly handles vertical (portrait) and horizontal video dimensions.
-    """
     if duration_seconds <= 0 or target_mb <= 0:
         return TargetSizeCalculation(
             target_mb=target_mb,
@@ -236,11 +360,9 @@ def calculate_target_bitrate(
             is_feasible=False,
         )
 
-    # Convert target MB to kilobits (1 MB = 8192 kilobits)
     usable_kilobits = (target_mb * 8192.0) * 0.98
     total_bitrate_kbps = int(usable_kilobits / duration_seconds)
 
-    # Dynamic audio allocation
     if total_bitrate_kbps > 800:
         audio_kbps = 128
     elif total_bitrate_kbps > 300:
@@ -264,7 +386,6 @@ def calculate_target_bitrate(
             is_feasible=False,
         )
 
-    # Pixel count: handles both landscape and portrait orientation
     effective_w = width if width > 0 else 1920
     effective_h = height if height > 0 else 1080
     effective_fps = fps if fps > 0 else 30.0
@@ -274,13 +395,11 @@ def calculate_target_bitrate(
     bpp = video_bps / (total_pixels * effective_fps)
 
     recommended_scale = None
-    # For meeting recordings with static content, bpp >= 0.05 is crisp
     if bpp >= 0.05:
         status = "optimal"
         status_msg = f"Optimal Quality ({video_kbps} kbps video, {audio_kbps} kbps audio)"
     elif bpp >= 0.025:
         status = "tight"
-        # Only downscale if the resolution is actually high (> 720p on short dimension)
         short_dim = min(effective_w, effective_h)
         if short_dim > 720:
             if effective_w >= effective_h:

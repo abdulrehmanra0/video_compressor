@@ -1,13 +1,13 @@
 """
 main.py
 PySide6 application entry point with v0.2 Smart Target Size engine,
-feasibility health gauge, dynamic auto-downscaling, QProcess execution,
-and dark-themed readable popup dialogs.
+feasibility health gauge, dynamic auto-downscaling, dark dialogs,
+and one-click background automated FFmpeg download and installation.
 """
 
 import sys
 import os
-from PySide6.QtCore import Qt, QProcess, QUrl, QTimer
+from PySide6.QtCore import Qt, QProcess, QUrl, QTimer, QThread, Signal
 from PySide6.QtGui import QDragEnterEvent, QDropEvent, QDesktopServices, QDoubleValidator
 from PySide6.QtWidgets import (
     QApplication,
@@ -36,6 +36,7 @@ from ffmpeg_core import (
     build_crf_args,
     build_target_size_args,
     calculate_target_bitrate,
+    download_and_extract_ffmpeg,
     parse_progress_line,
     parse_time_str_to_seconds,
     format_bytes,
@@ -234,6 +235,19 @@ QPushButton#secondaryBtn:hover {
     background-color: #323744;
 }
 
+QPushButton#downloadBtn {
+    background-color: #059669;
+    color: #FFFFFF;
+    border: 1px solid #10B981;
+    font-weight: 600;
+    padding: 6px 14px;
+    min-height: 18px;
+}
+
+QPushButton#downloadBtn:hover {
+    background-color: #047857;
+}
+
 QPushButton#chipBtn {
     background-color: #20242F;
     color: #CBD5E1;
@@ -338,11 +352,44 @@ QPlainTextEdit#logConsole {
 """
 
 
+class DownloadWorker(QThread):
+    """Background worker for streaming the FFmpeg zip download and extracting it."""
+    progress = Signal(int, str)  # percent, status message
+    finished_success = Signal(object)  # BinaryDetectionResult
+    failed = Signal(str)
+
+    def __init__(self):
+        super().__init__()
+        self._is_cancelled = False
+
+    def cancel(self):
+        self._is_cancelled = True
+
+    def run(self):
+        def on_progress(downloaded: int, total: int, status: str):
+            if total > 0:
+                pct = int((downloaded / total) * 100)
+                msg = f"{status} {format_bytes(downloaded)} / {format_bytes(total)} ({pct}%)"
+            else:
+                pct = 0
+                msg = f"{status} {format_bytes(downloaded)}"
+            self.progress.emit(pct, msg)
+
+        try:
+            result = download_and_extract_ffmpeg(
+                progress_callback=on_progress,
+                is_cancelled_func=lambda: self._is_cancelled,
+            )
+            self.finished_success.emit(result)
+        except Exception as e:
+            self.failed.emit(str(e))
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Video Compressor")
-        self.resize(780, 860)
+        self.resize(780, 870)
         self.setMinimumSize(640, 600)
 
         self.setAcceptDrops(True)
@@ -352,6 +399,7 @@ class MainWindow(QMainWindow):
         self.current_calc: TargetSizeCalculation | None = None
 
         self.process: QProcess | None = None
+        self.download_worker: DownloadWorker | None = None
         self.is_compressing = False
         self.was_cancelled = False
         self.target_output_file = ""
@@ -380,7 +428,7 @@ class MainWindow(QMainWindow):
         title = QLabel("Video Compressor", self)
         title.setObjectName("titleLabel")
         header_layout.addWidget(title)
-        subtitle = QLabel("Desktop meeting & media compressor (v0.2 with Smart Target Size)", self)
+        subtitle = QLabel("Desktop meeting & media compressor (v0.2 with Auto-Setup)", self)
         subtitle.setObjectName("subtitleLabel")
         header_layout.addWidget(subtitle)
         root_layout.addLayout(header_layout)
@@ -390,7 +438,7 @@ class MainWindow(QMainWindow):
         status_card.setObjectName("statusCard")
         sc_layout = QHBoxLayout(status_card)
         sc_layout.setContentsMargins(14, 10, 14, 10)
-        sc_layout.setSpacing(16)
+        sc_layout.setSpacing(14)
 
         sc_title = QLabel("Environment:", self)
         sc_title.setObjectName("sectionHeader")
@@ -412,7 +460,14 @@ class MainWindow(QMainWindow):
 
         sc_layout.addStretch()
 
-        self.btn_locate = QPushButton("Locate FFmpeg...", self)
+        # One-click Auto-Download button
+        self.btn_auto_download = QPushButton("Download FFmpeg (Auto)", self)
+        self.btn_auto_download.setObjectName("downloadBtn")
+        self.btn_auto_download.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_auto_download.clicked.connect(self._start_ffmpeg_download)
+        sc_layout.addWidget(self.btn_auto_download)
+
+        self.btn_locate = QPushButton("Locate Manual...", self)
         self.btn_locate.setObjectName("secondaryBtn")
         self.btn_locate.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_locate.clicked.connect(self._on_locate_clicked)
@@ -492,7 +547,6 @@ class MainWindow(QMainWindow):
         target_layout.setContentsMargins(12, 14, 12, 14)
         target_layout.setSpacing(12)
 
-        # Target input row
         target_input_row = QHBoxLayout()
         target_input_row.setSpacing(10)
 
@@ -530,13 +584,11 @@ class MainWindow(QMainWindow):
         target_input_row.addStretch()
         target_layout.addLayout(target_input_row)
 
-        # Auto downscale checkbox
         self.chk_auto_downscale = QCheckBox("Auto-adjust resolution if target bitrate is tight (keeps video sharp)", self)
         self.chk_auto_downscale.setChecked(True)
         self.chk_auto_downscale.stateChanged.connect(self._recalculate_target_size)
         target_layout.addWidget(self.chk_auto_downscale)
 
-        # Feasibility Gauge display box
         self.gauge_box = QFrame(self)
         self.gauge_box.setObjectName("gaugeBox")
         gb_layout = QHBoxLayout(self.gauge_box)
@@ -555,7 +607,6 @@ class MainWindow(QMainWindow):
         gb_layout.addWidget(self.lbl_health_msg, stretch=1)
 
         target_layout.addWidget(self.gauge_box)
-
         self.tab_widget.addTab(tab_target, "Smart Target Size (MB)")
 
         # --- Tab 2: CRF Quality Presets ---
@@ -744,7 +795,75 @@ class MainWindow(QMainWindow):
         self.badge_ffprobe.style().polish(self.badge_ffprobe)
 
         all_found = bool(self.detection.ffmpeg_path and self.detection.ffprobe_path)
+        self.btn_auto_download.setVisible(not all_found)
         self.btn_locate.setVisible(not all_found)
+
+    # --- Automated FFmpeg Downloader ---
+    def _start_ffmpeg_download(self):
+        if self.download_worker and self.download_worker.isRunning():
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "Auto-Download FFmpeg",
+            "This will download the official FFmpeg essentials bundle (~45 MB) directly from Gyan.dev and install it locally for this app.\n\nProceed with download?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        self.btn_auto_download.setEnabled(False)
+        self.btn_locate.setEnabled(False)
+        self.progress_card.setVisible(True)
+        self.results_box.setVisible(False)
+        self.progress_bar.setValue(0)
+        self.lbl_progress_status.setText("Connecting to FFmpeg repository...")
+
+        self.log_card.setVisible(True)
+        self.log_console.clear()
+        self.log_console.appendPlainText("[AUTO-SETUP] Starting automated download of FFmpeg essentials...\n")
+
+        self.download_worker = DownloadWorker()
+        self.download_worker.progress.connect(self._on_download_progress)
+        self.download_worker.finished_success.connect(self._on_download_success)
+        self.download_worker.failed.connect(self._on_download_failed)
+        self.download_worker.start()
+
+    def _on_download_progress(self, percent: int, message: str):
+        self.progress_bar.setValue(percent)
+        self.lbl_progress_status.setText(message)
+
+    def _on_download_success(self, detection: BinaryDetectionResult):
+        self.detection = detection
+        self._update_status_display()
+        self.progress_bar.setValue(100)
+        self.lbl_progress_status.setText("FFmpeg downloaded & installed successfully!")
+        self.log_console.appendPlainText(f"\n[AUTO-SETUP SUCCESS] FFmpeg located at: {detection.ffmpeg_path}")
+        self.log_console.appendPlainText(f"[AUTO-SETUP SUCCESS] FFprobe located at: {detection.ffprobe_path}")
+
+        self.btn_auto_download.setEnabled(True)
+        self.btn_locate.setEnabled(True)
+
+        if self.current_metadata:
+            self.btn_compress.setEnabled(True)
+
+        QMessageBox.information(
+            self,
+            "Installation Complete",
+            "FFmpeg and FFprobe have been successfully installed and activated! You can now compress videos immediately."
+        )
+
+    def _on_download_failed(self, error_msg: str):
+        self.lbl_progress_status.setText("Download failed.")
+        self.log_console.appendPlainText(f"\n[AUTO-SETUP ERROR] {error_msg}")
+        self.btn_auto_download.setEnabled(True)
+        self.btn_locate.setEnabled(True)
+        QMessageBox.critical(
+            self,
+            "Download Error",
+            f"Failed to auto-download FFmpeg:\n{error_msg}\n\nYou can manually locate an existing ffmpeg.exe using 'Locate Manual...'."
+        )
 
     def _on_locate_clicked(self):
         file_path, _ = QFileDialog.getOpenFileName(
@@ -781,7 +900,7 @@ class MainWindow(QMainWindow):
 
     def _process_selected_file(self, file_path: str):
         if not self.detection.ffprobe_path:
-            QMessageBox.critical(self, "Error", "Cannot inspect video: ffprobe.exe is missing.")
+            QMessageBox.critical(self, "Error", "Cannot inspect video: ffprobe.exe is missing. Please click 'Download FFmpeg (Auto)'.")
             return
 
         try:
@@ -812,7 +931,6 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Inspection Error", f"Could not read video metadata:\n{str(err)}")
 
     def _recalculate_target_size(self):
-        """Updates the Feasibility Gauge live as the user modifies target MB or loads video."""
         if not self.current_metadata:
             self.badge_health.setText("NO VIDEO")
             self.badge_health.setObjectName("statusBadgeWarning")
