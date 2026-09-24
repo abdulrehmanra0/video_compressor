@@ -1,49 +1,82 @@
-# 🎬 Desktop Video Compressor (v0.1)
+# 🎬 Video Compressor Desktop
 
-A clean, modern Windows desktop video compressor built using **Python 3.11+**, **PySide6 (Qt6)**, and **FFmpeg**.
-
-Designed with a strict separation of concerns: core media detection and encoding logic run completely decoupled from the presentation layer, keeping the UI fast, responsive, and maintainable.
+> A high-performance, dark-mode desktop application built with Python & PySide6 for effortlessly compressing screen recordings, Zoom meetings, and large videos with zero command-line friction.
 
 ---
 
-## 🚀 Tech Stack & Architecture
+## ✨ Key Features
 
-- **GUI Framework:** PySide6 (Qt 6.x) with custom dark mode theme (`QSS`)
-- **Process Engine:** `QProcess` for non-blocking asynchronous FFmpeg execution
-- **Media Backend:** External `ffmpeg` and `ffprobe` binaries (supports system PATH and WinGet installations)
-- **Core Separation:** `ffmpeg_core.py` contains zero GUI imports, acting as a standalone backend service
+- **⚡ Zero Setup (Auto-FFmpeg Downloader):**
+  - No need to manually install FFmpeg or configure Windows environment PATH variables.
+  - Built-in one-click downloader fetches, verifies, and configures FFmpeg automatically in the background.
+
+- **🎯 Smart Target Size Engine:**
+  - Need to fit under Discord's 25 MB upload limit or an email's 10 MB limit? Just pick a preset or type your target in MB.
+  - Automatically calculates the required video bitrate using `ffprobe` metadata and dynamically manages audio bandwidth.
+
+- **🩺 Live Feasibility Health Gauge:**
+  - Real-time safety check (`OPTIMAL`, `GOOD`, `TIGHT`, `IMPRACTICAL`) warns you before encoding if your target size is too aggressive for the video duration.
+  - Dynamic auto-downscaling recommendations protect text clarity and prevent macro-blocking on low bitrates.
+
+- **🎛️ Dual Compression Modes:**
+  - **Smart Target Size:** Hit exact file size limits every time (`-b:v`, `-maxrate`, `-bufsize`).
+  - **CRF Quality Presets:** Standard constant rate factor encoding (Minimal, Recommended, High Compression).
+
+- **📊 Live Activity & Progress Log:**
+  - Real-time progress bar with percentage, speed multiplier, and estimated time remaining.
+  - Collapsible terminal inspection log showing the exact FFmpeg commands and output.
+
+- **🌙 Clean Dark Modern UI:**
+  - Sleek, eye-friendly dark theme with styled system dialogs and intuitive status badges.
 
 ---
 
-## 🛠️ Current Progress (v0.1 - Step 1)
-
-- [x] Native dark-themed PySide6 main window
-- [x] Automatic system binary detection (`ffmpeg` & `ffprobe`)
-  - Scans system `PATH`
-  - Scans local WinGet package directories (`Gyan.FFmpeg`)
-  - Supports manual override file picker if binaries are missing
-- [ ] Drag-and-drop input video selection & media probing
-- [ ] CRF-based quality presets (High / Balanced / Small)
-- [ ] Real-time progress monitoring parsed via `-progress pipe:1`
-- [ ] Process cancellation and partial file cleanup
-
----
-
-## 📦 Getting Started
+## 🚀 Getting Started
 
 ### Prerequisites
-- Python 3.11 or higher
-- FFmpeg installed (recommended via WinGet: `winget install Gyan.FFmpeg`)
+- Python 3.10 or higher
+- Windows 10/11 (or macOS / Linux)
 
-### Installation & Run
+### Installation
 
-```bash
-# Clone the repository
-git clone https://github.com/abdulrehmanra0/video_compressor.git
-cd video-compressor
+1. **Clone the repository:**
+   ```bash
+   git clone https://github.com/your-username/your-repo-name.git
+   cd your-repo-name
+   ```
 
-# Install PySide6
-pip install PySide6
+2. **Create a virtual environment (recommended):**
+   ```bash
+   python -m venv venv
+   # On Windows PowerShell:
+   .\venv\Scripts\Activate.ps1
+   # On macOS/Linux:
+   source venv/bin/activate
+   ```
 
-# Launch the application
-python main.py
+3. **Install dependencies:**
+   ```bash
+   pip install PySide6
+   ```
+
+4. **Run the application:**
+   ```bash
+   python main.py
+   ```
+
+**Note on FFmpeg:** On first launch, if FFmpeg is not found on your system, simply click the green "Download FFmpeg (Auto)" button in the app header to download it automatically.
+
+---
+
+## 🛠️ Tech Stack
+
+- **GUI Framework:** [PySide6](https://pypi.org/project/PySide6/)
+- **Media Engine:** [FFmpeg](https://ffmpeg.org/) & [FFprobe](https://ffmpeg.org/ffprobe.html)
+- **Language:** Python 3.10+
+- **Styling:** Custom QSS (Qt Style Sheets) Dark Palette
+
+---
+
+## 📋 License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
