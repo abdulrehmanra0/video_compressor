@@ -1,487 +1,512 @@
 """
-ffmpeg_core.py
-Core binary detection, ffprobe metadata extraction, progress parsing,
-intelligent target file size bitrate calculation, and automated FFmpeg downloader.
-Zero GUI imports.
+ffmpeg_core.py - Core video inspection, BPP math engine, WinGet discovery,
+and Hardware-Accelerated encoding engine (Intel QSV, NVENC, AMF, CPU).
 """
 
-import os
-import sys
-import shutil
 import json
-import zipfile
-import urllib.request
+import math
+import os
+import re
+import shutil
 import subprocess
+import sys
+import urllib.request
+import zipfile
+from dataclasses import dataclass
 from pathlib import Path
-from typing import NamedTuple, Optional, List, Dict, Callable
+from typing import Callable, Dict, List, Optional, Tuple
 
-# Official Gyan.dev essentials zip URL (lightweight build with full x264/x265/audio support)
-FFMPEG_DOWNLOAD_URL = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+FFMPEG_ESSENTIALS_URL = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
 
 
-class BinaryDetectionResult(NamedTuple):
+@dataclass
+class BinaryDetectionResult:
     ffmpeg_path: Optional[str]
     ffprobe_path: Optional[str]
 
+    @property
+    def is_valid(self) -> bool:
+        return bool(self.ffmpeg_path and self.ffprobe_path)
 
-class VideoMetadata(NamedTuple):
+
+@dataclass
+class VideoMetadata:
     file_path: str
     file_name: str
     file_size_bytes: int
+    formatted_size: str
     duration_seconds: float
+    formatted_duration: str
     width: int
     height: int
+    resolution_str: str
     codec_name: str
-
-    @property
-    def formatted_size(self) -> str:
-        bytes_val = float(self.file_size_bytes)
-        if bytes_val >= 1024 ** 3:
-            return f"{bytes_val / (1024 ** 3):.2f} GB"
-        return f"{bytes_val / (1024 ** 2):.1f} MB"
-
-    @property
-    def formatted_duration(self) -> str:
-        total_seconds = int(self.duration_seconds)
-        hours = total_seconds // 3600
-        minutes = (total_seconds % 3600) // 60
-        seconds = total_seconds % 60
-        if hours > 0:
-            return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-        return f"{minutes:02d}:{seconds:02d}"
-
-    @property
-    def resolution_str(self) -> str:
-        if self.width and self.height:
-            return f"{self.width}x{self.height}"
-        return "Unknown"
+    bitrate_kbps: int
+    fps: float
 
 
-class TargetSizeCalculation(NamedTuple):
+@dataclass
+class TargetSizeCalculation:
     target_mb: float
-    total_bitrate_kbps: int
     video_bitrate_kbps: int
     audio_bitrate_kbps: int
+    total_bitrate_kbps: int
     bpp: float
-    status: str
+    status: str  # 'optimal', 'tight', 'impractical'
     status_message: str
     recommended_scale: Optional[str]
     is_feasible: bool
 
 
-def get_local_bin_dir() -> Path:
-    """Returns the app's local dedicated bin directory for downloaded binaries."""
-    # Place bin/ relative to this script directory
-    base_dir = Path(__file__).resolve().parent
-    bin_dir = base_dir / "bin"
-    bin_dir.mkdir(parents=True, exist_ok=True)
-    return bin_dir
+def format_bytes(size_bytes: int) -> str:
+    if size_bytes <= 0:
+        return "0 B"
+    units = ["B", "KB", "MB", "GB", "TB"]
+    i = int(math.floor(math.log(size_bytes, 1024)))
+    p = math.pow(1024, i)
+    s = round(size_bytes / p, 2)
+    return f"{s} {units[i]}"
 
 
-def format_bytes(num_bytes: int) -> str:
-    b = float(num_bytes)
-    if b >= 1024 ** 3:
-        return f"{b / (1024 ** 3):.2f} GB"
-    return f"{b / (1024 ** 2):.1f} MB"
-
-
-def format_seconds(seconds_val: float) -> str:
-    total_seconds = max(0, int(seconds_val))
-    hours = total_seconds // 3600
-    minutes = (total_seconds % 3600) // 60
-    seconds = total_seconds % 60
-    if hours > 0:
-        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
-    return f"{minutes:02d}:{seconds:02d}"
+def format_seconds(seconds: float) -> str:
+    if seconds < 0:
+        seconds = 0
+    hrs = int(seconds // 3600)
+    mins = int((seconds % 3600) // 60)
+    secs = int(seconds % 60)
+    if hrs > 0:
+        return f"{hrs:02d}:{mins:02d}:{secs:02d}"
+    return f"{mins:02d}:{secs:02d}"
 
 
 def parse_time_str_to_seconds(time_str: str) -> float:
     try:
         parts = time_str.split(":")
         if len(parts) == 3:
-            h = float(parts[0])
-            m = float(parts[1])
-            s = float(parts[2])
-            return h * 3600 + m * 60 + s
+            return float(parts[0]) * 3600 + float(parts[1]) * 60 + float(parts[2])
     except Exception:
         pass
     return 0.0
 
 
-# def locate_binaries(custom_ffmpeg_path: Optional[str] = None) -> BinaryDetectionResult:
-#     """
-#     Locates ffmpeg.exe and ffprobe.exe using the following priority:
-#     1. Custom path provided by user.
-#     2. Local app bin directory (bin/ffmpeg.exe).
-#     3. WinGet Gyan.FFmpeg package directory.
-#     4. System PATH.
-#     """
-#     ffmpeg_path: Optional[str] = None
-#     ffprobe_path: Optional[str] = None
+def parse_progress_line(line: str) -> Dict[str, str]:
+    if "=" in line:
+        k, v = line.split("=", 1)
+        return {k.strip(): v.strip()}
+    return {}
+
+
+def get_bin_dir() -> Path:
+    if getattr(sys, "frozen", False):
+        base_dir = Path(sys.executable).parent
+    else:
+        base_dir = Path(__file__).resolve().parent
+    bin_dir = base_dir / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    return bin_dir
+
 
 def locate_binaries(custom_ffmpeg_path: Optional[str] = None) -> BinaryDetectionResult:
-    """
-    Locates ffmpeg.exe and ffprobe.exe using the following priority:
-    1. Custom path provided by user.
-    2. Local app bin directory (bin/ffmpeg.exe).
-    3. WinGet Gyan.FFmpeg package directory.
-    4. System PATH.
-    """
-    return BinaryDetectionResult(ffmpeg_path=None, ffprobe_path=None)  # TEMPORARY TEST — simulates no FFmpeg found
+    bin_dir = get_bin_dir()
+    is_win = os.name == "nt"
+    ffmpeg_exe = "ffmpeg.exe" if is_win else "ffmpeg"
+    ffprobe_exe = "ffprobe.exe" if is_win else "ffprobe"
 
-    ffmpeg_path: Optional[str] = None
-    ffprobe_path: Optional[str] = None
-    # ... rest of the function stays untouched below this
+    ffmpeg_found = None
+    ffprobe_found = None
+    creationflags = subprocess.CREATE_NO_WINDOW if is_win else 0
 
-    # 1. Custom path
+    def test_run(path: str) -> bool:
+        try:
+            res = subprocess.run(
+                [path, "-version"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                creationflags=creationflags,
+                timeout=3,
+            )
+            return res.returncode == 0
+        except Exception:
+            return False
+
+    # 1. Custom user path
     if custom_ffmpeg_path and os.path.isfile(custom_ffmpeg_path):
-        ffmpeg_path = os.path.abspath(custom_ffmpeg_path)
-        candidate_probe = os.path.join(os.path.dirname(ffmpeg_path), "ffprobe.exe")
-        if os.path.isfile(candidate_probe):
-            ffprobe_path = candidate_probe
+        if test_run(custom_ffmpeg_path):
+            ffmpeg_found = custom_ffmpeg_path
+            candidate_probe = os.path.join(os.path.dirname(custom_ffmpeg_path), ffprobe_exe)
+            if os.path.isfile(candidate_probe) and test_run(candidate_probe):
+                ffprobe_found = candidate_probe
 
-    # 2. Local app bin folder (where auto-downloader saves them)
-    if not ffmpeg_path or not ffprobe_path:
-        local_bin = get_local_bin_dir()
-        local_ffmpeg = local_bin / "ffmpeg.exe"
-        local_ffprobe = local_bin / "ffprobe.exe"
-        if local_ffmpeg.is_file():
-            ffmpeg_path = str(local_ffmpeg.resolve())
-        if local_ffprobe.is_file():
-            ffprobe_path = str(local_ffprobe.resolve())
+    # 2. Local app bin/ directory (highest priority for portable zero-setup)
+    if not ffmpeg_found:
+        local_ffmpeg = bin_dir / ffmpeg_exe
+        if local_ffmpeg.is_file() and test_run(str(local_ffmpeg)):
+            ffmpeg_found = str(local_ffmpeg)
 
-    # 3. WinGet package directory
-    if not ffmpeg_path or not ffprobe_path:
-        local_app_data = os.environ.get("LOCALAPPDATA")
+    if not ffprobe_found:
+        local_ffprobe = bin_dir / ffprobe_exe
+        if local_ffprobe.is_file() and test_run(str(local_ffprobe)):
+            ffprobe_found = str(local_ffprobe)
+
+    # 3. WinGet Packages fallback (*Gyan.FFmpeg*/**/bin)
+    if is_win and (not ffmpeg_found or not ffprobe_found):
+        local_app_data = os.environ.get("LOCALAPPDATA", "")
         if local_app_data:
             winget_packages = Path(local_app_data) / "Microsoft" / "WinGet" / "Packages"
-            if winget_packages.exists():
-                for bin_dir in winget_packages.glob("*Gyan.FFmpeg*/**/bin"):
-                    cand_ffmpeg = bin_dir / "ffmpeg.exe"
-                    cand_ffprobe = bin_dir / "ffprobe.exe"
+            if winget_packages.is_dir():
+                for bin_cand in winget_packages.glob("*Gyan.FFmpeg*/**/bin"):
+                    cand_ff = bin_cand / ffmpeg_exe
+                    cand_probe = bin_cand / ffprobe_exe
 
-                    if not ffmpeg_path and cand_ffmpeg.is_file():
-                        ffmpeg_path = str(cand_ffmpeg.resolve())
-                    if not ffprobe_path and cand_ffprobe.is_file():
-                        ffprobe_path = str(cand_ffprobe.resolve())
+                    if not ffmpeg_found and cand_ff.is_file() and test_run(str(cand_ff)):
+                        ffmpeg_found = str(cand_ff)
 
-                    if ffmpeg_path and ffprobe_path:
+                    if not ffprobe_found and cand_probe.is_file() and test_run(str(cand_probe)):
+                        ffprobe_found = str(cand_probe)
+
+                    if ffmpeg_found and ffprobe_found:
                         break
 
-    # 4. System PATH
-    if not ffmpeg_path:
-        found_ffmpeg = shutil.which("ffmpeg")
-        if found_ffmpeg:
-            ffmpeg_path = os.path.abspath(found_ffmpeg)
+    # 4. System PATH fallback
+    if not ffmpeg_found:
+        sys_ffmpeg = shutil.which("ffmpeg")
+        if sys_ffmpeg and test_run(sys_ffmpeg):
+            ffmpeg_found = sys_ffmpeg
 
-    if not ffprobe_path:
-        found_probe = shutil.which("ffprobe")
-        if found_probe:
-            ffprobe_path = os.path.abspath(found_probe)
+    if not ffprobe_found:
+        sys_ffprobe = shutil.which("ffprobe")
+        if sys_ffprobe and test_run(sys_ffprobe):
+            ffprobe_found = sys_ffprobe
 
-    return BinaryDetectionResult(ffmpeg_path=ffmpeg_path, ffprobe_path=ffprobe_path)
+    return BinaryDetectionResult(ffmpeg_path=ffmpeg_found, ffprobe_path=ffprobe_found)
+
+
+def probe_hardware_encoders(ffmpeg_path: str) -> Dict[str, bool]:
+    """Tests if hardware acceleration works on this machine's GPU and driver."""
+    results = {"qsv": False, "nvenc": False, "amf": False}
+    if not ffmpeg_path or not os.path.isfile(ffmpeg_path):
+        return results
+
+    creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+    test_cases = [("qsv", "h264_qsv"), ("nvenc", "h264_nvenc"), ("amf", "h264_amf")]
+
+    for key, encoder in test_cases:
+        try:
+            cmd = [
+                ffmpeg_path,
+                "-y",
+                "-f", "lavfi",
+                "-i", "color=c=black:s=128x128:d=0.1",
+                "-c:v", encoder,
+                "-f", "null",
+                "-",
+            ]
+            res = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                creationflags=creationflags,
+                timeout=4,
+            )
+            if res.returncode == 0:
+                results[key] = True
+        except Exception:
+            results[key] = False
+
+    return results
 
 
 def download_and_extract_ffmpeg(
     progress_callback: Optional[Callable[[int, int, str], None]] = None,
     is_cancelled_func: Optional[Callable[[], bool]] = None,
 ) -> BinaryDetectionResult:
-    """
-    Downloads FFmpeg essentials zip directly from gyan.dev and extracts ffmpeg.exe
-    and ffprobe.exe into the local bin/ folder.
-    - progress_callback(downloaded_bytes, total_bytes, status_text)
-    - is_cancelled_func() -> bool
-    """
-    bin_dir = get_local_bin_dir()
-    zip_temp_path = bin_dir / "ffmpeg_temp.zip"
+    bin_dir = get_bin_dir()
+    zip_path = bin_dir / "ffmpeg_download_temp.zip"
 
-    # User-Agent header is required by some CDNs to prevent 403 Forbidden
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) VideoCompressorAutoDownloader/1.0"
-    }
-    req = urllib.request.Request(FFMPEG_DOWNLOAD_URL, headers=headers)
-
-    if progress_callback:
-        progress_callback(0, 0, "Connecting to official FFmpeg server...")
+    req = urllib.request.Request(
+        FFMPEG_ESSENTIALS_URL,
+        headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
+    )
 
     with urllib.request.urlopen(req, timeout=30) as response:
         total_size = int(response.headers.get("content-length", 0))
         downloaded = 0
-        chunk_size = 1024 * 128  # 128 KB chunks
+        block_size = 1024 * 512
 
-        with open(zip_temp_path, "wb") as out_file:
+        with open(zip_path, "wb") as f:
             while True:
                 if is_cancelled_func and is_cancelled_func():
-                    out_file.close()
-                    if zip_temp_path.exists():
-                        zip_temp_path.unlink()
-                    raise InterruptedError("Download was cancelled by user.")
-
-                chunk = response.read(chunk_size)
+                    raise InterruptedError("Download cancelled by user.")
+                chunk = response.read(block_size)
                 if not chunk:
                     break
-
-                out_file.write(chunk)
+                f.write(chunk)
                 downloaded += len(chunk)
-
                 if progress_callback:
                     progress_callback(downloaded, total_size, "Downloading FFmpeg...")
 
     if progress_callback:
-        progress_callback(downloaded, total_size, "Extracting binaries...")
+        progress_callback(total_size, total_size, "Extracting binaries...")
 
-    # Extract only ffmpeg.exe and ffprobe.exe into bin_dir
-    extracted_ffmpeg: Optional[Path] = None
-    extracted_ffprobe: Optional[Path] = None
+    with zipfile.ZipFile(zip_path, "r") as z:
+        for item in z.namelist():
+            norm = item.replace("\\", "/")
+            fname = os.path.basename(norm)
+            if fname.lower() in ("ffmpeg.exe", "ffprobe.exe"):
+                src = z.open(item)
+                dest = bin_dir / fname
+                with open(dest, "wb") as out_f:
+                    shutil.copyfileobj(src, out_f)
 
-    with zipfile.ZipFile(zip_temp_path, "r") as z:
-        for file_info in z.infolist():
-            filename = os.path.basename(file_info.filename).lower()
-            if filename in ("ffmpeg.exe", "ffprobe.exe"):
-                # Extract file contents into destination
-                dest_path = bin_dir / filename
-                with z.open(file_info) as source, open(dest_path, "wb") as target:
-                    shutil.copyfileobj(source, target)
+    if zip_path.exists():
+        try:
+            zip_path.unlink()
+        except Exception:
+            pass
 
-                if filename == "ffmpeg.exe":
-                    extracted_ffmpeg = dest_path
-                elif filename == "ffprobe.exe":
-                    extracted_ffprobe = dest_path
-
-    # Clean up the zip file
-    if zip_temp_path.exists():
-        zip_temp_path.unlink()
-
-    if not extracted_ffmpeg or not extracted_ffmpeg.exists():
-        raise FileNotFoundError("Could not find ffmpeg.exe inside the downloaded archive.")
-
-    return BinaryDetectionResult(
-        ffmpeg_path=str(extracted_ffmpeg.resolve()) if extracted_ffmpeg else None,
-        ffprobe_path=str(extracted_ffprobe.resolve()) if extracted_ffprobe else None,
-    )
+    return locate_binaries()
 
 
-def probe_video(ffprobe_path: str, video_path: str) -> VideoMetadata:
-    if not os.path.isfile(video_path):
-        raise FileNotFoundError(f"Input video file not found: {video_path}")
-
-    if not os.path.isfile(ffprobe_path):
-        raise FileNotFoundError(f"ffprobe binary not found at: {ffprobe_path}")
-
+def probe_video(ffprobe_path: str, file_path: str) -> VideoMetadata:
+    creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
     cmd = [
         ffprobe_path,
-        "-v", "error",
-        "-show_entries", "stream=width,height,duration,codec_name",
-        "-show_entries", "format=duration,size",
-        "-of", "json",
-        video_path,
+        "-v", "quiet",
+        "-print_format", "json",
+        "-show_format",
+        "-show_streams",
+        file_path,
     ]
-
-    startupinfo = None
-    if os.name == "nt":
-        startupinfo = subprocess.STARTUPINFO()
-        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-
-    result = subprocess.run(
+    res = subprocess.run(
         cmd,
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
-        encoding="utf-8",
-        errors="replace",
-        startupinfo=startupinfo,
+        creationflags=creationflags,
         timeout=15,
     )
+    if res.returncode != 0:
+        raise RuntimeError("ffprobe could not inspect this file.")
 
-    if result.returncode != 0:
-        raise RuntimeError(f"ffprobe failed: {result.stderr.strip()}")
+    data = json.loads(res.stdout)
+    vstream = next((s for s in data.get("streams", []) if s.get("codec_type") == "video"), None)
+    if not vstream:
+        raise ValueError("No video stream found in file.")
 
-    data = json.loads(result.stdout)
-    format_data = data.get("format", {})
-    streams = data.get("streams", [])
+    dur = float(data.get("format", {}).get("duration", vstream.get("duration", 0)))
+    w = int(vstream.get("width", 0))
+    h = int(vstream.get("height", 0))
+    size_b = int(data.get("format", {}).get("size", os.path.getsize(file_path)))
+    br = int(data.get("format", {}).get("bit_rate", vstream.get("bit_rate", 0)))
+    codec = vstream.get("codec_name", "unknown")
 
-    width = 0
-    height = 0
-    codec_name = "unknown"
-    stream_duration = 0.0
-
-    for stream in streams:
-        if "width" in stream and "height" in stream:
-            width = int(stream["width"])
-            height = int(stream["height"])
-            codec_name = stream.get("codec_name", "unknown")
-            if "duration" in stream:
-                try:
-                    stream_duration = float(stream["duration"])
-                except (ValueError, TypeError):
-                    pass
-            break
-
-    duration = 0.0
+    # Extract accurate FPS
+    r_fps = vstream.get("r_frame_rate", "30/1")
     try:
-        duration = float(format_data.get("duration", stream_duration))
-    except (ValueError, TypeError):
-        duration = stream_duration
-
-    size_bytes = os.path.getsize(video_path)
-    try:
-        format_size = int(format_data.get("size", size_bytes))
-        size_bytes = format_size if format_size > 0 else size_bytes
-    except (ValueError, TypeError):
-        pass
+        if "/" in r_fps:
+            num, den = r_fps.split("/")
+            fps = float(num) / float(den) if float(den) != 0 else 30.0
+        else:
+            fps = float(r_fps)
+    except Exception:
+        fps = 30.0
 
     return VideoMetadata(
-        file_path=os.path.abspath(video_path),
-        file_name=os.path.basename(video_path),
-        file_size_bytes=size_bytes,
-        duration_seconds=duration,
-        width=width,
-        height=height,
-        codec_name=codec_name,
+        file_path=file_path,
+        file_name=os.path.basename(file_path),
+        file_size_bytes=size_b,
+        formatted_size=format_bytes(size_b),
+        duration_seconds=dur,
+        formatted_duration=format_seconds(dur),
+        width=w,
+        height=h,
+        resolution_str=f"{w}x{h}",
+        codec_name=codec,
+        bitrate_kbps=int(br / 1000) if br > 0 else 0,
+        fps=round(fps, 2),
     )
 
 
 def calculate_target_bitrate(
     target_mb: float,
     duration_seconds: float,
-    width: int = 1920,
-    height: int = 1080,
+    width: int,
+    height: int,
     fps: float = 30.0,
 ) -> TargetSizeCalculation:
-    if duration_seconds <= 0 or target_mb <= 0:
+    """Calculates bitrate using Bits Per Pixel (BPP): bpp = video_bps / (total_pixels * effective_fps)."""
+    if duration_seconds <= 0:
         return TargetSizeCalculation(
             target_mb=target_mb,
-            total_bitrate_kbps=0,
-            video_bitrate_kbps=0,
-            audio_bitrate_kbps=0,
-            bpp=0.0,
-            status="impossible",
-            status_message="Invalid duration or target size.",
+            video_bitrate_kbps=1000,
+            audio_bitrate_kbps=128,
+            total_bitrate_kbps=1128,
+            bpp=0.05,
+            status="optimal",
+            status_message="Valid duration required.",
             recommended_scale=None,
-            is_feasible=False,
+            is_feasible=True,
         )
 
-    usable_kilobits = (target_mb * 8192.0) * 0.98
-    total_bitrate_kbps = int(usable_kilobits / duration_seconds)
+    total_kbits = target_mb * 8192 * 0.95
+    total_kbps = total_kbits / duration_seconds
 
-    if total_bitrate_kbps > 800:
-        audio_kbps = 128
-    elif total_bitrate_kbps > 300:
-        audio_kbps = 64
-    else:
+    if total_kbps < 200:
         audio_kbps = 48
+    elif total_kbps < 400:
+        audio_kbps = 64
+    elif total_kbps < 800:
+        audio_kbps = 96
+    else:
+        audio_kbps = 128
 
-    video_kbps = total_bitrate_kbps - audio_kbps
+    video_kbps = int(total_kbps - audio_kbps)
+    if video_kbps < 64:
+        video_kbps = 64
 
-    if video_kbps < 50:
-        min_feasible_mb = round(((50 + audio_kbps) * duration_seconds) / (8192.0 * 0.98), 1)
-        return TargetSizeCalculation(
-            target_mb=target_mb,
-            total_bitrate_kbps=total_bitrate_kbps,
-            video_bitrate_kbps=max(0, video_kbps),
-            audio_bitrate_kbps=audio_kbps,
-            bpp=0.0,
-            status="impossible",
-            status_message=f"Target too small for {format_seconds(duration_seconds)}. Min feasible: ~{min_feasible_mb} MB.",
-            recommended_scale=None,
-            is_feasible=False,
-        )
-
-    effective_w = width if width > 0 else 1920
-    effective_h = height if height > 0 else 1080
-    effective_fps = fps if fps > 0 else 30.0
-    total_pixels = effective_w * effective_h
-
-    video_bps = video_kbps * 1000.0
+    # BPP Math calculation
+    video_bps = video_kbps * 1000
+    total_pixels = max(1, width * height)
+    effective_fps = max(1.0, fps)
     bpp = video_bps / (total_pixels * effective_fps)
 
-    recommended_scale = None
-    if bpp >= 0.05:
+    is_vertical = height > width
+    rec_scale = None
+
+    if bpp < 0.012:
+        status = "impractical"
+        rec_scale = "360:-2" if is_vertical else "-2:360"
+        msg = f"Extremely Low Quality (BPP: {bpp:.4f}, {video_kbps} kbps). Severe artifacts likely. Consider trimming or raising target MB."
+    elif bpp < 0.025:
+        status = "tight"
+        rec_scale = "480:-2" if is_vertical else "-2:480"
+        msg = f"Tight Quality (BPP: {bpp:.4f}, {video_kbps} kbps). Downscaling recommended to preserve text sharpness."
+    elif bpp < 0.045:
         status = "optimal"
-        status_msg = f"Optimal Quality ({video_kbps} kbps video, {audio_kbps} kbps audio)"
-    elif bpp >= 0.025:
-        status = "tight"
-        short_dim = min(effective_w, effective_h)
-        if short_dim > 720:
-            if effective_w >= effective_h:
-                recommended_scale = "1280:-2"
-            else:
-                recommended_scale = "-2:1280"
-            status_msg = f"Fair Quality ({video_kbps} kbps). Auto-downscale to 720p recommended for sharp text."
+        if (width > 1280 or height > 1280) and bpp < 0.035:
+            rec_scale = "720:-2" if is_vertical else "-2:720"
+            msg = f"Good Quality (BPP: {bpp:.4f}, {video_kbps} kbps). Auto-downscaling to 720p recommended for crisp slides."
         else:
-            status_msg = f"Good Quality ({video_kbps} kbps). Resolution maintained."
+            rec_scale = None
+            msg = f"Good Quality (BPP: {bpp:.4f}, {video_kbps} kbps). Suitable for meetings and screen recordings."
     else:
-        status = "tight"
-        if effective_w >= effective_h:
-            recommended_scale = "854:-2"
-        else:
-            recommended_scale = "-2:854"
-        status_msg = f"Low Bitrate ({video_kbps} kbps). Auto-downscale to 480p recommended to preserve clarity."
+        status = "optimal"
+        rec_scale = None
+        msg = f"Optimal Quality (BPP: {bpp:.4f}, {video_kbps} kbps). Generous bitrate with sharp clarity."
 
     return TargetSizeCalculation(
         target_mb=target_mb,
-        total_bitrate_kbps=total_bitrate_kbps,
         video_bitrate_kbps=video_kbps,
         audio_bitrate_kbps=audio_kbps,
+        total_bitrate_kbps=int(total_kbps),
         bpp=round(bpp, 4),
         status=status,
-        status_message=status_msg,
-        recommended_scale=recommended_scale,
-        is_feasible=True,
+        status_message=msg,
+        recommended_scale=rec_scale,
+        is_feasible=(status != "impractical"),
     )
 
 
-def build_crf_args(input_path: str, output_path: str, crf: int) -> List[str]:
-    return [
-        "-y",
-        "-nostats",
-        "-progress", "pipe:1",
-        "-i", input_path,
-        "-c:v", "libx264",
-        "-crf", str(crf),
-        "-preset", "medium",
-        "-pix_fmt", "yuv420p",
+def _resolve_encoder(codec_name: str, hw_accel: str, hw_caps: Optional[Dict[str, bool]]) -> Tuple[str, str]:
+    hw_choice = "cpu"
+    if hw_accel == "auto":
+        if hw_caps and hw_caps.get("qsv"):
+            hw_choice = "qsv"
+        elif hw_caps and hw_caps.get("nvenc"):
+            hw_choice = "nvenc"
+        elif hw_caps and hw_caps.get("amf"):
+            hw_choice = "amf"
+        else:
+            hw_choice = "cpu"
+    else:
+        hw_choice = hw_accel
+
+    if codec_name == "hevc":
+        if hw_choice == "qsv":
+            return "hevc_qsv", "qsv"
+        if hw_choice == "nvenc":
+            return "hevc_nvenc", "nvenc"
+        if hw_choice == "amf":
+            return "hevc_amf", "amf"
+        return "libx265", "cpu"
+    else:
+        if hw_choice == "qsv":
+            return "h264_qsv", "qsv"
+        if hw_choice == "nvenc":
+            return "h264_nvenc", "nvenc"
+        if hw_choice == "amf":
+            return "h264_amf", "amf"
+        return "libx264", "cpu"
+
+
+def build_crf_args(
+    input_path: str,
+    output_path: str,
+    crf_value: int = 28,
+    codec_name: str = "h264",
+    hw_accel: str = "auto",
+    hw_caps: Optional[Dict[str, bool]] = None,
+) -> List[str]:
+    enc, hw = _resolve_encoder(codec_name, hw_accel, hw_caps)
+    args = ["-y", "-i", input_path, "-c:v", enc]
+
+    if hw == "cpu":
+        args.extend(["-crf", str(crf_value), "-preset", "medium"])
+    elif hw == "qsv":
+        args.extend(["-global_quality", str(crf_value), "-preset", "medium"])
+    elif hw == "nvenc":
+        args.extend(["-cq", str(crf_value), "-preset", "p4"])
+    elif hw == "amf":
+        args.extend(["-rc", "cqp", "-qp_p", str(crf_value)])
+
+    if hw != "qsv":
+        args.extend(["-pix_fmt", "yuv420p"])
+
+    args.extend([
         "-c:a", "aac",
         "-b:a", "128k",
+        "-movflags", "+faststart",
+        "-progress", "pipe:1",
+        "-nostats",
         output_path,
-    ]
+    ])
+    return args
 
 
 def build_target_size_args(
     input_path: str,
     output_path: str,
     video_kbps: int,
-    audio_kbps: int,
+    audio_kbps: int = 128,
     scale: Optional[str] = None,
+    codec_name: str = "h264",
+    hw_accel: str = "auto",
+    hw_caps: Optional[Dict[str, bool]] = None,
 ) -> List[str]:
-    maxrate = int(video_kbps * 1.15)
-    bufsize = int(video_kbps * 2.0)
+    enc, hw = _resolve_encoder(codec_name, hw_accel, hw_caps)
+    args = ["-y", "-i", input_path, "-c:v", enc]
 
-    args = [
-        "-y",
-        "-nostats",
-        "-progress", "pipe:1",
-        "-i", input_path,
-        "-c:v", "libx264",
+    args.extend([
         "-b:v", f"{video_kbps}k",
-        "-maxrate", f"{maxrate}k",
-        "-bufsize", f"{bufsize}k",
-        "-preset", "medium",
-    ]
+        "-maxrate", f"{video_kbps}k",
+        "-bufsize", f"{video_kbps * 2}k",
+    ])
+
+    if hw in ("cpu", "qsv"):
+        args.extend(["-preset", "medium"])
 
     if scale:
         args.extend(["-vf", f"scale={scale}"])
 
+    if hw != "qsv":
+        args.extend(["-pix_fmt", "yuv420p"])
+
     args.extend([
-        "-pix_fmt", "yuv420p",
         "-c:a", "aac",
         "-b:a", f"{audio_kbps}k",
+        "-movflags", "+faststart",
+        "-progress", "pipe:1",
+        "-nostats",
         output_path,
     ])
     return args
-
-
-def parse_progress_line(line: str) -> Dict[str, str]:
-    if "=" in line:
-        key, value = line.split("=", 1)
-        return {key.strip(): value.strip()}
-    return {}
