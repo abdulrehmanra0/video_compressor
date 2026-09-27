@@ -1,51 +1,64 @@
 """
-main.py
-PySide6 application entry point with v0.2 Smart Target Size engine,
-feasibility health gauge, dynamic auto-downscaling, dark dialogs,
-and one-click background automated FFmpeg download and installation.
+main.py - Polished PyQt6 application with BPP Health Gauge, Auto-FFmpeg Downloader,
+Cancel & Auto-Cleanup, and GPU Hardware Acceleration (Intel QSV / CPU).
 """
 
-import sys
 import os
-from PySide6.QtCore import Qt, QProcess, QUrl, QTimer, QThread, Signal
-from PySide6.QtGui import QDragEnterEvent, QDropEvent, QDesktopServices, QDoubleValidator
-from PySide6.QtWidgets import (
+import sys
+from pathlib import Path
+
+from PyQt6.QtCore import (
+    QProcess,
+    Qt,
+    QThread,
+    QTimer,
+    QUrl,
+    pyqtSignal,
+)
+from PyQt6.QtGui import (
+    QDesktopServices,
+    QDoubleValidator,
+    QDragEnterEvent,
+    QDropEvent,
+)
+from PyQt6.QtWidgets import (
     QApplication,
-    QMainWindow,
-    QWidget,
-    QVBoxLayout,
+    QButtonGroup,
+    QCheckBox,
+    QComboBox,
+    QFileDialog,
+    QFrame,
     QHBoxLayout,
     QLabel,
-    QPushButton,
-    QFrame,
-    QFileDialog,
-    QRadioButton,
-    QButtonGroup,
     QLineEdit,
+    QMainWindow,
     QMessageBox,
-    QProgressBar,
-    QScrollArea,
     QPlainTextEdit,
+    QProgressBar,
+    QPushButton,
+    QRadioButton,
+    QScrollArea,
     QTabWidget,
-    QCheckBox,
+    QVBoxLayout,
+    QWidget,
 )
 
 from ffmpeg_core import (
-    locate_binaries,
-    probe_video,
+    BinaryDetectionResult,
+    TargetSizeCalculation,
+    VideoMetadata,
     build_crf_args,
     build_target_size_args,
     calculate_target_bitrate,
     download_and_extract_ffmpeg,
-    parse_progress_line,
-    parse_time_str_to_seconds,
     format_bytes,
     format_seconds,
-    BinaryDetectionResult,
-    VideoMetadata,
-    TargetSizeCalculation,
+    locate_binaries,
+    parse_progress_line,
+    parse_time_str_to_seconds,
+    probe_hardware_encoders,
+    probe_video,
 )
-
 
 DARK_THEME_QSS = """
 QMainWindow {
@@ -183,19 +196,25 @@ QLabel#metaValueLabel {
     min-height: 20px;
 }
 
-QLineEdit {
+QLineEdit, QComboBox {
     background-color: #0F1115;
     border: 1px solid #2D3139;
     border-radius: 6px;
     padding: 6px 10px;
     color: #F1F5F9;
-    font-family: "Consolas", monospace;
     font-size: 12px;
     min-height: 22px;
 }
 
-QLineEdit:focus {
+QLineEdit:focus, QComboBox:focus {
     border-color: #3B82F6;
+}
+
+QComboBox QAbstractItemView {
+    background-color: #1A1C23;
+    color: #F8FAFC;
+    selection-background-color: #2563EB;
+    border: 1px solid #2D3139;
 }
 
 QPushButton {
@@ -353,10 +372,9 @@ QPlainTextEdit#logConsole {
 
 
 class DownloadWorker(QThread):
-    """Background worker for streaming the FFmpeg zip download and extracting it."""
-    progress = Signal(int, str)  # percent, status message
-    finished_success = Signal(object)  # BinaryDetectionResult
-    failed = Signal(str)
+    progress = pyqtSignal(int, str)
+    finished_success = pyqtSignal(object)
+    failed = pyqtSignal(str)
 
     def __init__(self):
         super().__init__()
@@ -388,15 +406,15 @@ class DownloadWorker(QThread):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Video Compressor")
-        self.resize(780, 870)
+        self.setWindowTitle("Video Compressor Pro")
+        self.resize(800, 900)
         self.setMinimumSize(640, 600)
-
         self.setAcceptDrops(True)
 
         self.detection: BinaryDetectionResult = BinaryDetectionResult(None, None)
         self.current_metadata: VideoMetadata | None = None
         self.current_calc: TargetSizeCalculation | None = None
+        self.hw_caps = {"qsv": False, "nvenc": False, "amf": False}
 
         self.process: QProcess | None = None
         self.download_worker: DownloadWorker | None = None
@@ -425,10 +443,10 @@ class MainWindow(QMainWindow):
         # Header
         header_layout = QVBoxLayout()
         header_layout.setSpacing(3)
-        title = QLabel("Video Compressor", self)
+        title = QLabel("Video Compressor Pro", self)
         title.setObjectName("titleLabel")
         header_layout.addWidget(title)
-        subtitle = QLabel("Desktop meeting & media compressor (v0.2 with Auto-Setup)", self)
+        subtitle = QLabel("Hardware Accelerated & Smart Target Size Video Compressor", self)
         subtitle.setObjectName("subtitleLabel")
         header_layout.addWidget(subtitle)
         root_layout.addLayout(header_layout)
@@ -438,7 +456,7 @@ class MainWindow(QMainWindow):
         status_card.setObjectName("statusCard")
         sc_layout = QHBoxLayout(status_card)
         sc_layout.setContentsMargins(14, 10, 14, 10)
-        sc_layout.setSpacing(14)
+        sc_layout.setSpacing(12)
 
         sc_title = QLabel("Environment:", self)
         sc_title.setObjectName("sectionHeader")
@@ -458,9 +476,16 @@ class MainWindow(QMainWindow):
         probe_row.addWidget(self.badge_ffprobe)
         sc_layout.addLayout(probe_row)
 
+        hw_row = QHBoxLayout()
+        hw_row.setSpacing(6)
+        hw_row.addWidget(QLabel("GPU:", self))
+        self.badge_gpu = QLabel("CPU (Software)", self)
+        self.badge_gpu.setObjectName("statusBadgeWarning")
+        hw_row.addWidget(self.badge_gpu)
+        sc_layout.addLayout(hw_row)
+
         sc_layout.addStretch()
 
-        # One-click Auto-Download button
         self.btn_auto_download = QPushButton("Download FFmpeg (Auto)", self)
         self.btn_auto_download.setObjectName("downloadBtn")
         self.btn_auto_download.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -528,14 +553,14 @@ class MainWindow(QMainWindow):
         self.info_card.setVisible(False)
         root_layout.addWidget(self.info_card)
 
-        # 4. Compression Mode (Tabs: Smart Target Size vs CRF Quality)
+        # 4. Compression Mode Card
         compress_mode_card = QFrame(self)
         compress_mode_card.setObjectName("compressModeCard")
         cm_layout = QVBoxLayout(compress_mode_card)
         cm_layout.setContentsMargins(16, 14, 16, 14)
-        cm_layout.setSpacing(10)
+        cm_layout.setSpacing(12)
 
-        cm_title = QLabel("Compression Mode", self)
+        cm_title = QLabel("Compression Engine", self)
         cm_title.setObjectName("sectionHeader")
         cm_layout.addWidget(cm_title)
 
@@ -635,8 +660,27 @@ class MainWindow(QMainWindow):
 
         crf_layout.addLayout(radio_layout)
         self.tab_widget.addTab(tab_crf, "Quality Presets (CRF)")
-
         cm_layout.addWidget(self.tab_widget)
+
+        # Hardware & Codec Section
+        hw_card_layout = QHBoxLayout()
+        hw_card_layout.setSpacing(12)
+
+        hw_card_layout.addWidget(QLabel("⚡ Encoder (HW):", self))
+        self.combo_hw = QComboBox(self)
+        self.combo_hw.addItem("Auto-Detect (Recommended)", "auto")
+        self.combo_hw.addItem("Intel Quick Sync (QSV Hardware)", "qsv")
+        self.combo_hw.addItem("Software (CPU libx264)", "cpu")
+        hw_card_layout.addWidget(self.combo_hw, stretch=2)
+
+        hw_card_layout.addWidget(QLabel("Codec:", self))
+        self.combo_codec = QComboBox(self)
+        self.combo_codec.addItem("H.264 (Universal Playability)", "h264")
+        self.combo_codec.addItem("H.265 / HEVC (30% Smaller)", "hevc")
+        self.combo_codec.currentIndexChanged.connect(self._on_codec_changed)
+        hw_card_layout.addWidget(self.combo_codec, stretch=2)
+
+        cm_layout.addLayout(hw_card_layout)
         root_layout.addWidget(compress_mode_card)
 
         # 5. Output Destination Card
@@ -771,6 +815,38 @@ class MainWindow(QMainWindow):
     def _check_binaries(self, custom_path: str | None = None):
         self.detection = locate_binaries(custom_path)
         self._update_status_display()
+        if self.detection.ffmpeg_path:
+            self._probe_gpu()
+
+    def _probe_gpu(self):
+        self.hw_caps = probe_hardware_encoders(self.detection.ffmpeg_path)
+        if self.hw_caps.get("qsv"):
+            self.badge_gpu.setText("⚡ Intel QSV Active")
+            self.badge_gpu.setObjectName("statusBadgeSuccess")
+            self.combo_hw.setItemText(0, "Auto-Detect: Intel QSV (Active)")
+        elif self.hw_caps.get("nvenc"):
+            self.badge_gpu.setText("⚡ NVIDIA NVENC Active")
+            self.badge_gpu.setObjectName("statusBadgeSuccess")
+            self.combo_hw.setItemText(0, "Auto-Detect: NVIDIA NVENC (Active)")
+        elif self.hw_caps.get("amf"):
+            self.badge_gpu.setText("⚡ AMD AMF Active")
+            self.badge_gpu.setObjectName("statusBadgeSuccess")
+            self.combo_hw.setItemText(0, "Auto-Detect: AMD AMF (Active)")
+        else:
+            self.badge_gpu.setText("💻 CPU (Software)")
+            self.badge_gpu.setObjectName("statusBadgeWarning")
+            self.combo_hw.setItemText(0, "Auto-Detect: CPU (Software)")
+
+        self.badge_gpu.style().unpolish(self.badge_gpu)
+        self.badge_gpu.style().polish(self.badge_gpu)
+
+    def _on_codec_changed(self):
+        if not self.current_metadata:
+            return
+        curr_p = self.txt_output_path.text().strip()
+        if curr_p:
+            stem, _ = os.path.splitext(curr_p)
+            self.txt_output_path.setText(f"{stem}.mp4")
 
     def _update_status_display(self):
         if self.detection.ffmpeg_path:
@@ -798,7 +874,6 @@ class MainWindow(QMainWindow):
         self.btn_auto_download.setVisible(not all_found)
         self.btn_locate.setVisible(not all_found)
 
-    # --- Automated FFmpeg Downloader ---
     def _start_ffmpeg_download(self):
         if self.download_worker and self.download_worker.isRunning():
             return
@@ -837,6 +912,7 @@ class MainWindow(QMainWindow):
     def _on_download_success(self, detection: BinaryDetectionResult):
         self.detection = detection
         self._update_status_display()
+        self._probe_gpu()
         self.progress_bar.setValue(100)
         self.lbl_progress_status.setText("FFmpeg downloaded & installed successfully!")
         self.log_console.appendPlainText(f"\n[AUTO-SETUP SUCCESS] FFmpeg located at: {detection.ffmpeg_path}")
@@ -910,7 +986,7 @@ class MainWindow(QMainWindow):
             self.lbl_meta_name.setText(metadata.file_name)
             self.lbl_meta_size.setText(metadata.formatted_size)
             self.lbl_meta_duration.setText(metadata.formatted_duration)
-            self.lbl_meta_res.setText(f"{metadata.resolution_str} ({metadata.codec_name})")
+            self.lbl_meta_res.setText(f"{metadata.resolution_str} @ {metadata.fps} fps ({metadata.codec_name})")
             self.info_card.setVisible(True)
 
             folder = os.path.dirname(metadata.file_path)
@@ -960,6 +1036,7 @@ class MainWindow(QMainWindow):
             duration_seconds=self.current_metadata.duration_seconds,
             width=self.current_metadata.width,
             height=self.current_metadata.height,
+            fps=self.current_metadata.fps,
         )
         self.current_calc = calc
 
@@ -975,7 +1052,8 @@ class MainWindow(QMainWindow):
 
         msg = calc.status_message
         if self.chk_auto_downscale.isChecked() and calc.recommended_scale:
-            msg += f" (Auto-scaling to {calc.recommended_scale.split(':')[0]}p enabled)"
+            dim_label = calc.recommended_scale.split(":")[0] if not calc.recommended_scale.startswith("-2:") else calc.recommended_scale.split(":")[1]
+            msg += f" (Auto-scaling to {dim_label}p enabled)"
 
         self.lbl_health_msg.setText(msg)
         self._refresh_gauge_style()
@@ -1012,6 +1090,8 @@ class MainWindow(QMainWindow):
             return
 
         is_target_mode = (self.tab_widget.currentIndex() == 0)
+        codec_name = self.combo_codec.currentData()
+        hw_accel = self.combo_hw.currentData()
 
         if is_target_mode:
             self._recalculate_target_size()
@@ -1033,12 +1113,22 @@ class MainWindow(QMainWindow):
                 video_kbps=self.current_calc.video_bitrate_kbps,
                 audio_kbps=self.current_calc.audio_bitrate_kbps,
                 scale=scale,
+                codec_name=codec_name,
+                hw_accel=hw_accel,
+                hw_caps=self.hw_caps,
             )
         else:
             crf_value = self.preset_group.checkedId()
             if crf_value == -1:
                 crf_value = 28
-            args = build_crf_args(self.current_metadata.file_path, output_path, crf_value)
+            args = build_crf_args(
+                input_path=self.current_metadata.file_path,
+                output_path=output_path,
+                crf_value=crf_value,
+                codec_name=codec_name,
+                hw_accel=hw_accel,
+                hw_caps=self.hw_caps,
+            )
 
         self.target_output_file = output_path
         self.was_cancelled = False
@@ -1071,7 +1161,7 @@ class MainWindow(QMainWindow):
         if not self.process or not self.current_metadata:
             return
 
-        raw_data = self.process.readAllStandardOutput().data().decode("utf-8", errors="replace")
+        raw_data = bytes(self.process.readAllStandardOutput()).decode("utf-8", errors="replace")
         self._stdout_buffer += raw_data
 
         lines = self._stdout_buffer.split("\n")
@@ -1125,7 +1215,7 @@ class MainWindow(QMainWindow):
     def _on_ffmpeg_stderr(self):
         if not self.process:
             return
-        err_data = self.process.readAllStandardError().data().decode("utf-8", errors="replace")
+        err_data = bytes(self.process.readAllStandardError()).decode("utf-8", errors="replace")
         if err_data:
             self.log_console.appendPlainText(err_data.rstrip())
             self.log_console.verticalScrollBar().setValue(
