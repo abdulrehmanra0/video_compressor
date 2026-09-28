@@ -196,6 +196,16 @@ QLabel#metaValueLabel {
     min-height: 20px;
 }
 
+
+
+QFrame#trimCard { background-color: #12141A; border: 1px solid #282E3E; border-radius: 6px; padding: 6px; }
+QLabel#trimTitle { font-weight: 600; color: #94A3B8; font-size: 11px; text-transform: uppercase; }
+
+QLabel#dropLabel { font-size: 14px; font-weight: 500; color: #CBD5E1; }
+QLabel#dropSublabel { font-size: 11px; color: #64748B; }
+QLabel#targetSizeLabel { font-weight: 600; color: #E2E8F0; }
+QLabel#healthMsgLabel { color: #E2E8F0; font-size: 12px; font-weight: 500; }
+
 QLineEdit, QComboBox {
     background-color: #0F1115;
     border: 1px solid #2D3139;
@@ -385,7 +395,7 @@ QWidget#scrollContent {
 }
 
 QWidget {
-    color: #1F2937;
+    color: #0F172A;
     font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif;
     font-size: 13px;
 }
@@ -423,7 +433,7 @@ QFrame#statusCard, QFrame#dropCard, QFrame#infoCard, QFrame#compressModeCard, QF
 }
 
 QFrame#dropCard {
-    border: 2px dashed #D1D5DB;
+    border: 2px dashed #94A3B8;
     background-color: #F9FAFB;
 }
 
@@ -433,8 +443,8 @@ QFrame#dropCard:hover {
 }
 
 QFrame#gaugeBox {
-    background-color: #F9FAFB;
-    border: 1px solid #E5E7EB;
+    background-color: #F8FAFC;
+    border: 1px solid #E2E8F0;
     border-radius: 6px;
 }
 
@@ -494,17 +504,27 @@ QLabel#statusBadgeError {
 }
 
 QLabel#metaKeyLabel {
-    color: #4B5563;
+    color: #64748B;
     font-size: 12px;
     min-height: 20px;
 }
 
 QLabel#metaValueLabel {
-    color: #111827;
+    color: #0F172A;
     font-weight: 500;
     font-size: 12px;
     min-height: 20px;
 }
+
+
+
+QFrame#trimCard { background-color: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 6px; padding: 6px; }
+QLabel#trimTitle { font-weight: 600; color: #64748B; font-size: 11px; text-transform: uppercase; }
+
+QLabel#dropLabel { font-size: 14px; font-weight: bold; color: #1E293B; }
+QLabel#dropSublabel { font-size: 11px; color: #64748B; }
+QLabel#targetSizeLabel { font-weight: 600; color: #0F172A; }
+QLabel#healthMsgLabel { color: #334155; font-size: 12px; font-weight: 500; }
 
 QLineEdit, QComboBox {
     background-color: #FFFFFF;
@@ -578,9 +598,9 @@ QPushButton#downloadBtn:hover {
 }
 
 QPushButton#chipBtn {
-    background-color: #F3F4F6;
-    color: #374151;
-    border: 1px solid #D1D5DB;
+    background-color: #F1F5F9;
+    color: #334155;
+    border: 1px solid #CBD5E1;
     border-radius: 13px;
     padding: 4px 12px;
     font-size: 11px;
@@ -589,9 +609,9 @@ QPushButton#chipBtn {
 }
 
 QPushButton#chipBtn:hover {
-    background-color: #E5E7EB;
+    background-color: #E2E8F0;
     border-color: #3B82F6;
-    color: #1F2937;
+    color: #2563EB;
 }
 
 QPushButton#cancelBtn {
@@ -835,11 +855,11 @@ class MainWindow(QMainWindow):
         drop_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         self.drop_label = QLabel("Drag and drop your video file here", self)
-        self.drop_label.setStyleSheet("font-size: 14px; font-weight: 500; color: #CBD5E1;")
+        self.drop_label.setObjectName("dropLabel")
         drop_layout.addWidget(self.drop_label, alignment=Qt.AlignmentFlag.AlignCenter)
 
         self.drop_sublabel = QLabel("Supports MP4, MOV, MKV, WebM, AVI", self)
-        self.drop_sublabel.setStyleSheet("font-size: 11px; color: #64748B;")
+        self.drop_sublabel.setObjectName("dropSublabel")
         drop_layout.addWidget(self.drop_sublabel, alignment=Qt.AlignmentFlag.AlignCenter)
 
         self.btn_browse = QPushButton("Select Video File...", self)
@@ -879,13 +899,13 @@ class MainWindow(QMainWindow):
 
         # --- Built-in Video Trimmer Row ---
         trim_card = QFrame(self)
-        trim_card.setStyleSheet("background-color: #12141A; border: 1px solid #282E3E; border-radius: 6px; padding: 6px;")
+        trim_card.setObjectName("trimCard")
         trim_layout = QHBoxLayout(trim_card)
         trim_layout.setContentsMargins(10, 6, 10, 6)
         trim_layout.setSpacing(10)
 
         lbl_trim_title = QLabel("✂ Trimming (Optional):", self)
-        lbl_trim_title.setStyleSheet("font-weight: 600; color: #94A3B8; font-size: 11px; text-transform: uppercase;")
+        lbl_trim_title.setObjectName("trimTitle")
         trim_layout.addWidget(lbl_trim_title)
 
         trim_layout.addWidget(QLabel("Start Time:", self))
@@ -942,7 +962,7 @@ class MainWindow(QMainWindow):
         target_input_row.setSpacing(10)
 
         lbl_target = QLabel("Target Size (MB):", self)
-        lbl_target.setStyleSheet("font-weight: 600; color: #E2E8F0;")
+        lbl_target.setObjectName("targetSizeLabel")
         target_input_row.addWidget(lbl_target)
 
         self.txt_target_mb = QLineEdit(self)
@@ -993,7 +1013,7 @@ class MainWindow(QMainWindow):
         gb_layout.addWidget(self.badge_health)
 
         self.lbl_health_msg = QLabel("Load a video to see bitrate feasibility", self)
-        self.lbl_health_msg.setStyleSheet("color: #E2E8F0; font-size: 12px; font-weight: 500;")
+        self.lbl_health_msg.setObjectName("healthMsgLabel")
         self.lbl_health_msg.setWordWrap(True)
         gb_layout.addWidget(self.lbl_health_msg, stretch=1)
 
