@@ -370,6 +370,317 @@ QPlainTextEdit#logConsole {
 }
 """
 
+LIGHT_THEME_QSS = """
+QMainWindow {
+    background-color: #F3F4F6;
+}
+
+QScrollArea {
+    background-color: #F3F4F6;
+    border: none;
+}
+
+QWidget#scrollContent {
+    background-color: #F3F4F6;
+}
+
+QWidget {
+    color: #1F2937;
+    font-family: "Segoe UI", -apple-system, BlinkMacSystemFont, sans-serif;
+    font-size: 13px;
+}
+
+/* Styled MessageBox for Light Mode */
+QMessageBox {
+    background-color: #FFFFFF;
+    border: 1px solid #E5E7EB;
+}
+
+QMessageBox QLabel {
+    color: #111827;
+    font-size: 13px;
+    line-height: 1.5;
+}
+
+QMessageBox QPushButton {
+    background-color: #2563EB;
+    color: #FFFFFF;
+    border: none;
+    border-radius: 6px;
+    padding: 6px 18px;
+    min-width: 65px;
+    font-weight: 600;
+}
+
+QMessageBox QPushButton:hover {
+    background-color: #1D4ED8;
+}
+
+QFrame#statusCard, QFrame#dropCard, QFrame#infoCard, QFrame#compressModeCard, QFrame#outputCard, QFrame#progressCard, QFrame#logCard {
+    background-color: #FFFFFF;
+    border: 1px solid #E5E7EB;
+    border-radius: 8px;
+}
+
+QFrame#dropCard {
+    border: 2px dashed #D1D5DB;
+    background-color: #F9FAFB;
+}
+
+QFrame#dropCard:hover {
+    border-color: #3B82F6;
+    background-color: #F3F4F6;
+}
+
+QFrame#gaugeBox {
+    background-color: #F9FAFB;
+    border: 1px solid #E5E7EB;
+    border-radius: 6px;
+}
+
+QLabel#titleLabel {
+    font-size: 18px;
+    font-weight: 600;
+    color: #111827;
+    min-height: 24px;
+}
+
+QLabel#subtitleLabel {
+    font-size: 12px;
+    color: #6B7280;
+    min-height: 18px;
+}
+
+QLabel#sectionHeader {
+    font-weight: 600;
+    font-size: 12px;
+    color: #6B7280;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    min-height: 18px;
+}
+
+QLabel#statusBadgeSuccess {
+    background-color: #D1FAE5;
+    color: #065F46;
+    border: 1px solid #10B981;
+    border-radius: 4px;
+    padding: 3px 10px;
+    font-weight: 700;
+    font-size: 11px;
+    min-height: 18px;
+}
+
+QLabel#statusBadgeWarning {
+    background-color: #FEF3C7;
+    color: #92400E;
+    border: 1px solid #F59E0B;
+    border-radius: 4px;
+    padding: 3px 10px;
+    font-weight: 700;
+    font-size: 11px;
+    min-height: 18px;
+}
+
+QLabel#statusBadgeError {
+    background-color: #FEE2E2;
+    color: #991B1B;
+    border: 1px solid #EF4444;
+    border-radius: 4px;
+    padding: 3px 10px;
+    font-weight: 700;
+    font-size: 11px;
+    min-height: 18px;
+}
+
+QLabel#metaKeyLabel {
+    color: #4B5563;
+    font-size: 12px;
+    min-height: 20px;
+}
+
+QLabel#metaValueLabel {
+    color: #111827;
+    font-weight: 500;
+    font-size: 12px;
+    min-height: 20px;
+}
+
+QLineEdit, QComboBox {
+    background-color: #FFFFFF;
+    border: 1px solid #D1D5DB;
+    border-radius: 6px;
+    padding: 6px 10px;
+    color: #111827;
+    font-size: 12px;
+    min-height: 22px;
+}
+
+QLineEdit:focus, QComboBox:focus {
+    border-color: #3B82F6;
+}
+
+QComboBox QAbstractItemView {
+    background-color: #FFFFFF;
+    color: #111827;
+    selection-background-color: #2563EB;
+    border: 1px solid #D1D5DB;
+}
+
+QPushButton {
+    background-color: #2563EB;
+    color: #FFFFFF;
+    border: none;
+    border-radius: 6px;
+    padding: 8px 18px;
+    font-weight: 600;
+    min-height: 18px;
+}
+
+QPushButton:hover {
+    background-color: #1D4ED8;
+}
+
+QPushButton:pressed {
+    background-color: #1E40AF;
+}
+
+QPushButton:disabled {
+    background-color: #E5E7EB;
+    color: #9CA3AF;
+    border: 1px solid #D1D5DB;
+}
+
+QPushButton#secondaryBtn {
+    background-color: #F3F4F6;
+    color: #1F2937;
+    border: 1px solid #D1D5DB;
+    font-weight: 500;
+    padding: 6px 14px;
+    min-height: 18px;
+}
+
+QPushButton#secondaryBtn:hover {
+    background-color: #E5E7EB;
+}
+
+QPushButton#downloadBtn {
+    background-color: #10B981;
+    color: #FFFFFF;
+    border: 1px solid #059669;
+    font-weight: 600;
+    padding: 6px 14px;
+    min-height: 18px;
+}
+
+QPushButton#downloadBtn:hover {
+    background-color: #047857;
+}
+
+QPushButton#chipBtn {
+    background-color: #F3F4F6;
+    color: #374151;
+    border: 1px solid #D1D5DB;
+    border-radius: 13px;
+    padding: 4px 12px;
+    font-size: 11px;
+    font-weight: 500;
+    min-height: 18px;
+}
+
+QPushButton#chipBtn:hover {
+    background-color: #E5E7EB;
+    border-color: #3B82F6;
+    color: #1F2937;
+}
+
+QPushButton#cancelBtn {
+    background-color: #FEE2E2;
+    color: #991B1B;
+    border: 1px solid #EF4444;
+    padding: 8px 18px;
+    min-height: 18px;
+}
+
+QPushButton#cancelBtn:hover {
+    background-color: #FCA5A5;
+}
+
+QTabWidget::pane {
+    border: 1px solid #D1D5DB;
+    border-radius: 6px;
+    background-color: #F9FAFB;
+}
+
+QTabBar::tab {
+    background-color: #FFFFFF;
+    color: #6B7280;
+    border: 1px solid #D1D5DB;
+    border-bottom: none;
+    border-top-left-radius: 6px;
+    border-top-right-radius: 6px;
+    padding: 7px 18px;
+    font-weight: 500;
+    margin-right: 2px;
+}
+
+QTabBar::tab:selected {
+    background-color: #F9FAFB;
+    color: #2563EB;
+    border-color: #D1D5DB;
+    font-weight: 600;
+}
+
+QRadioButton, QCheckBox {
+    spacing: 8px;
+    color: #374151;
+    font-weight: 500;
+    min-height: 22px;
+}
+
+QRadioButton::indicator {
+    width: 16px;
+    height: 16px;
+    border-radius: 8px;
+    border: 2px solid #9CA3AF;
+    background-color: #FFFFFF;
+}
+
+QRadioButton::indicator:checked {
+    border-color: #3B82F6;
+    background-color: #3B82F6;
+}
+
+QProgressBar {
+    background-color: #F3F4F6;
+    border: 1px solid #D1D5DB;
+    border-radius: 6px;
+    text-align: center;
+    color: #111827;
+    font-weight: 600;
+    font-size: 12px;
+    height: 24px;
+    min-height: 24px;
+}
+
+QProgressBar::chunk {
+    background-color: #2563EB;
+    border-radius: 5px;
+}
+
+QPlainTextEdit#logConsole {
+    background-color: #F9FAFB;
+    color: #374151;
+    border: 1px solid #D1D5DB;
+    border-radius: 6px;
+    font-family: "Consolas", "Courier New", monospace;
+    font-size: 11px;
+    line-height: 1.4;
+    padding: 8px;
+}
+"""
+
+
 
 class DownloadWorker(QThread):
     progress = pyqtSignal(int, str)
@@ -424,6 +735,8 @@ class MainWindow(QMainWindow):
         self.current_run_duration = 0.0
         self._stdout_buffer = ""
 
+        self.is_dark_mode = True
+
         self._init_ui()
         self._check_binaries()
 
@@ -442,14 +755,26 @@ class MainWindow(QMainWindow):
         root_layout.setSpacing(14)
 
         # Header
-        header_layout = QVBoxLayout()
-        header_layout.setSpacing(3)
+        header_layout = QHBoxLayout()
+        header_text_layout = QVBoxLayout()
+        header_text_layout.setSpacing(3)
         title = QLabel("Video Compressor Pro", self)
         title.setObjectName("titleLabel")
-        header_layout.addWidget(title)
+        header_text_layout.addWidget(title)
         subtitle = QLabel("Hardware Accelerated & Smart Target Size Video Compressor with Trimmer", self)
         subtitle.setObjectName("subtitleLabel")
-        header_layout.addWidget(subtitle)
+        header_text_layout.addWidget(subtitle)
+        header_layout.addLayout(header_text_layout)
+
+        header_layout.addStretch()
+
+        self.btn_toggle_theme = QPushButton("☀️ / 🌙", self)
+        self.btn_toggle_theme.setObjectName("secondaryBtn")
+        self.btn_toggle_theme.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_toggle_theme.setToolTip("Toggle Light/Dark Theme")
+        self.btn_toggle_theme.clicked.connect(self._toggle_theme)
+        header_layout.addWidget(self.btn_toggle_theme)
+
         root_layout.addLayout(header_layout)
 
         # 1. Environment status bar
@@ -1400,6 +1725,15 @@ class MainWindow(QMainWindow):
         is_visible = self.log_console.isVisible()
         self.log_console.setVisible(not is_visible)
         self.btn_toggle_log.setText("Show Log" if is_visible else "Hide Log")
+
+    def _toggle_theme(self):
+        self.is_dark_mode = not self.is_dark_mode
+        app = QApplication.instance()
+        if app:
+            if self.is_dark_mode:
+                app.setStyleSheet(DARK_THEME_QSS)
+            else:
+                app.setStyleSheet(LIGHT_THEME_QSS)
 
 
 def main():
