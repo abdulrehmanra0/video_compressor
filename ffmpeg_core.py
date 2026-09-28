@@ -1,6 +1,6 @@
 """
 ffmpeg_core.py - Core video inspection, BPP math engine, WinGet discovery,
-built-in trimming support, and GPU Hardware-Accelerated encoding engine (Intel QSV, NVENC, AMF, CPU).
+and Hardware-Accelerated encoding engine (Intel QSV, NVENC, AMF, CPU).
 """
 
 import json
@@ -79,22 +79,14 @@ def format_seconds(seconds: float) -> str:
     return f"{mins:02d}:{secs:02d}"
 
 
-def parse_time_str_to_seconds(time_str: str) -> Optional[float]:
-    """Parses HH:MM:SS, MM:SS, or pure numeric seconds into float seconds."""
-    time_str = time_str.strip()
-    if not time_str:
-        return None
+def parse_time_str_to_seconds(time_str: str) -> float:
     try:
         parts = time_str.split(":")
         if len(parts) == 3:
             return float(parts[0]) * 3600 + float(parts[1]) * 60 + float(parts[2])
-        elif len(parts) == 2:
-            return float(parts[0]) * 60 + float(parts[1])
-        elif len(parts) == 1:
-            return float(parts[0])
     except Exception:
         pass
-    return None
+    return 0.0
 
 
 def parse_progress_line(line: str) -> Dict[str, str]:
@@ -145,7 +137,7 @@ def locate_binaries(custom_ffmpeg_path: Optional[str] = None) -> BinaryDetection
             if os.path.isfile(candidate_probe) and test_run(candidate_probe):
                 ffprobe_found = candidate_probe
 
-    # 2. Local app bin/ directory
+    # 2. Local app bin/ directory (highest priority for portable zero-setup)
     if not ffmpeg_found:
         local_ffmpeg = bin_dir / ffmpeg_exe
         if local_ffmpeg.is_file() and test_run(str(local_ffmpeg)):
@@ -190,6 +182,7 @@ def locate_binaries(custom_ffmpeg_path: Optional[str] = None) -> BinaryDetection
 
 
 def probe_hardware_encoders(ffmpeg_path: str) -> Dict[str, bool]:
+    """Tests if hardware acceleration works on this machine's GPU and driver."""
     results = {"qsv": False, "nvenc": False, "amf": False}
     if not ffmpeg_path or not os.path.isfile(ffmpeg_path):
         return results
@@ -307,6 +300,7 @@ def probe_video(ffprobe_path: str, file_path: str) -> VideoMetadata:
     br = int(data.get("format", {}).get("bit_rate", vstream.get("bit_rate", 0)))
     codec = vstream.get("codec_name", "unknown")
 
+    # Extract accurate FPS
     r_fps = vstream.get("r_frame_rate", "30/1")
     try:
         if "/" in r_fps:
@@ -370,6 +364,7 @@ def calculate_target_bitrate(
     if video_kbps < 64:
         video_kbps = 64
 
+    # BPP Math calculation
     video_bps = video_kbps * 1000
     total_pixels = max(1, width * height)
     effective_fps = max(1.0, fps)
@@ -451,19 +446,9 @@ def build_crf_args(
     codec_name: str = "h264",
     hw_accel: str = "auto",
     hw_caps: Optional[Dict[str, bool]] = None,
-    start_time: Optional[str] = None,
-    end_time: Optional[str] = None,
 ) -> List[str]:
     enc, hw = _resolve_encoder(codec_name, hw_accel, hw_caps)
-    args = ["-y"]
-
-    # Fast seeking options before -i
-    if start_time and start_time.strip():
-        args.extend(["-ss", start_time.strip()])
-    if end_time and end_time.strip():
-        args.extend(["-to", end_time.strip()])
-
-    args.extend(["-i", input_path, "-c:v", enc])
+    args = ["-y", "-i", input_path, "-c:v", enc]
 
     if hw == "cpu":
         args.extend(["-crf", str(crf_value), "-preset", "medium"])
@@ -497,19 +482,9 @@ def build_target_size_args(
     codec_name: str = "h264",
     hw_accel: str = "auto",
     hw_caps: Optional[Dict[str, bool]] = None,
-    start_time: Optional[str] = None,
-    end_time: Optional[str] = None,
 ) -> List[str]:
     enc, hw = _resolve_encoder(codec_name, hw_accel, hw_caps)
-    args = ["-y"]
-
-    # Fast seeking options before -i
-    if start_time and start_time.strip():
-        args.extend(["-ss", start_time.strip()])
-    if end_time and end_time.strip():
-        args.extend(["-to", end_time.strip()])
-
-    args.extend(["-i", input_path, "-c:v", enc])
+    args = ["-y", "-i", input_path, "-c:v", enc]
 
     args.extend([
         "-b:v", f"{video_kbps}k",
