@@ -1,11 +1,11 @@
 """
 main.py - Polished PyQt6 application with BPP Health Gauge, Auto-FFmpeg Downloader,
-Cancel & Auto-Cleanup, and GPU Hardware Acceleration (Intel QSV / CPU).
+Video Trimmer (-ss / -to), Cancel & Auto-Cleanup, and GPU Hardware Acceleration (Intel QSV / CPU).
 """
 
 import os
 import sys
-from pathlib import Path
+from typing import Optional, Tuple
 
 from PyQt6.QtCore import (
     QProcess,
@@ -196,6 +196,10 @@ QLabel#metaValueLabel {
     min-height: 20px;
 }
 
+
+
+QFrame#trimCard { background-color: #12141A; border: 1px solid #282E3E; border-radius: 6px; padding: 6px; }
+QLabel#trimTitle { font-weight: 600; color: #94A3B8; font-size: 11px; text-transform: uppercase; }
 
 QLabel#dropLabel { font-size: 14px; font-weight: 500; color: #CBD5E1; }
 QLabel#dropSublabel { font-size: 11px; color: #64748B; }
@@ -513,6 +517,10 @@ QLabel#metaValueLabel {
 }
 
 
+
+QFrame#trimCard { background-color: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 6px; padding: 6px; }
+QLabel#trimTitle { font-weight: 600; color: #64748B; font-size: 11px; text-transform: uppercase; }
+
 QLabel#dropLabel { font-size: 14px; font-weight: bold; color: #1E293B; }
 QLabel#dropSublabel { font-size: 11px; color: #64748B; }
 QLabel#targetSizeLabel { font-weight: 600; color: #0F172A; }
@@ -730,7 +738,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Video Compressor Pro")
-        self.resize(800, 900)
+        self.resize(800, 920)
         self.setMinimumSize(640, 600)
         self.setAcceptDrops(True)
 
@@ -744,6 +752,7 @@ class MainWindow(QMainWindow):
         self.is_compressing = False
         self.was_cancelled = False
         self.target_output_file = ""
+        self.current_run_duration = 0.0
         self._stdout_buffer = ""
 
         self.is_dark_mode = True
@@ -772,7 +781,7 @@ class MainWindow(QMainWindow):
         title = QLabel("Video Compressor Pro", self)
         title.setObjectName("titleLabel")
         header_text_layout.addWidget(title)
-        subtitle = QLabel("Hardware Accelerated & Smart Target Size Video Compressor", self)
+        subtitle = QLabel("Hardware Accelerated & Smart Target Size Video Compressor with Trimmer", self)
         subtitle.setObjectName("subtitleLabel")
         header_text_layout.addWidget(subtitle)
         header_layout.addLayout(header_text_layout)
@@ -860,12 +869,12 @@ class MainWindow(QMainWindow):
 
         root_layout.addWidget(self.drop_card)
 
-        # 3. Video Metadata Details Card
+        # 3. Video Metadata Details & Trimming Card
         self.info_card = QFrame(self)
         self.info_card.setObjectName("infoCard")
         info_layout = QVBoxLayout(self.info_card)
         info_layout.setContentsMargins(16, 14, 16, 14)
-        info_layout.setSpacing(8)
+        info_layout.setSpacing(10)
 
         info_header = QLabel("Input Video Details", self)
         info_header.setObjectName("sectionHeader")
@@ -887,6 +896,46 @@ class MainWindow(QMainWindow):
         meta_grid.addLayout(col2, stretch=1)
 
         info_layout.addLayout(meta_grid)
+
+        # --- Built-in Video Trimmer Row ---
+        trim_card = QFrame(self)
+        trim_card.setObjectName("trimCard")
+        trim_layout = QHBoxLayout(trim_card)
+        trim_layout.setContentsMargins(10, 6, 10, 6)
+        trim_layout.setSpacing(10)
+
+        lbl_trim_title = QLabel("✂ Trimming (Optional):", self)
+        lbl_trim_title.setObjectName("trimTitle")
+        trim_layout.addWidget(lbl_trim_title)
+
+        trim_layout.addWidget(QLabel("Start Time:", self))
+        self.txt_start_time = QLineEdit(self)
+        self.txt_start_time.setPlaceholderText("00:00:00")
+        self.txt_start_time.setFixedWidth(85)
+        self.txt_start_time.textChanged.connect(self._on_trim_changed)
+        trim_layout.addWidget(self.txt_start_time)
+
+        trim_layout.addWidget(QLabel("End Time:", self))
+        self.txt_end_time = QLineEdit(self)
+        self.txt_end_time.setPlaceholderText("HH:MM:SS")
+        self.txt_end_time.setFixedWidth(85)
+        self.txt_end_time.textChanged.connect(self._on_trim_changed)
+        trim_layout.addWidget(self.txt_end_time)
+
+        self.lbl_trim_duration = QLabel("(Full Video)", self)
+        self.lbl_trim_duration.setStyleSheet("color: #60A5FA; font-weight: 600; font-size: 11px;")
+        trim_layout.addWidget(self.lbl_trim_duration)
+
+        self.btn_reset_trim = QPushButton("Reset", self)
+        self.btn_reset_trim.setObjectName("secondaryBtn")
+        self.btn_reset_trim.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_reset_trim.setFixedHeight(26)
+        self.btn_reset_trim.clicked.connect(self._reset_trim)
+        trim_layout.addWidget(self.btn_reset_trim)
+
+        trim_layout.addStretch()
+        info_layout.addWidget(trim_card)
+
         self.info_card.setVisible(False)
         root_layout.addWidget(self.info_card)
 
@@ -1326,6 +1375,8 @@ class MainWindow(QMainWindow):
             self.lbl_meta_res.setText(f"{metadata.resolution_str} @ {metadata.fps} fps ({metadata.codec_name})")
             self.info_card.setVisible(True)
 
+            self._reset_trim()
+
             folder = os.path.dirname(metadata.file_path)
             stem, _ = os.path.splitext(metadata.file_name)
             default_out = os.path.join(folder, f"{stem}_compressed.mp4")
@@ -1342,6 +1393,55 @@ class MainWindow(QMainWindow):
 
         except Exception as err:
             QMessageBox.critical(self, "Inspection Error", f"Could not read video metadata:\n{str(err)}")
+
+    # --- Trimming Helpers ---
+    def _reset_trim(self):
+        self.txt_start_time.blockSignals(True)
+        self.txt_end_time.blockSignals(True)
+        self.txt_start_time.clear()
+        self.txt_end_time.clear()
+        self.txt_start_time.blockSignals(False)
+        self.txt_end_time.blockSignals(False)
+        self.lbl_trim_duration.setText("(Full Video)")
+        self._recalculate_target_size()
+
+    def _on_trim_changed(self):
+        self._recalculate_target_size()
+
+    def _get_effective_duration_and_times(self) -> Tuple[float, Optional[str], Optional[str]]:
+        if not self.current_metadata:
+            return 0.0, None, None
+
+        total_dur = self.current_metadata.duration_seconds
+        start_str = self.txt_start_time.text().strip()
+        end_str = self.txt_end_time.text().strip()
+
+        start_sec = parse_time_str_to_seconds(start_str) if start_str else None
+        end_sec = parse_time_str_to_seconds(end_str) if end_str else None
+
+        s_val = start_sec if start_sec is not None else 0.0
+        e_val = end_sec if end_sec is not None else total_dur
+
+        if s_val < 0:
+            s_val = 0.0
+        if e_val > total_dur:
+            e_val = total_dur
+
+        if e_val > s_val:
+            trimmed_dur = e_val - s_val
+        else:
+            trimmed_dur = total_dur
+
+        is_trimmed = (start_sec is not None and start_sec > 0) or (end_sec is not None and end_sec < total_dur)
+        if is_trimmed:
+            self.lbl_trim_duration.setText(f"✂ Trimmed: {format_seconds(trimmed_dur)} (of {self.current_metadata.formatted_duration})")
+        else:
+            self.lbl_trim_duration.setText("(Full Video)")
+
+        final_start = start_str if (start_sec is not None and start_sec > 0) else None
+        final_end = end_str if (end_sec is not None and end_sec < total_dur) else None
+
+        return trimmed_dur, final_start, final_end
 
     def _recalculate_target_size(self):
         if not self.current_metadata:
@@ -1368,9 +1468,11 @@ class MainWindow(QMainWindow):
             self._refresh_gauge_style()
             return
 
+        trimmed_dur, _, _ = self._get_effective_duration_and_times()
+
         calc = calculate_target_bitrate(
             target_mb=target_mb,
-            duration_seconds=self.current_metadata.duration_seconds,
+            duration_seconds=trimmed_dur,
             width=self.current_metadata.width,
             height=self.current_metadata.height,
             fps=self.current_metadata.fps,
@@ -1430,6 +1532,9 @@ class MainWindow(QMainWindow):
         codec_name = self.combo_codec.currentData()
         hw_accel = self.combo_hw.currentData()
 
+        trimmed_dur, start_time, end_time = self._get_effective_duration_and_times()
+        self.current_run_duration = trimmed_dur
+
         if is_target_mode:
             self._recalculate_target_size()
             if not self.current_calc or not self.current_calc.is_feasible:
@@ -1453,6 +1558,8 @@ class MainWindow(QMainWindow):
                 codec_name=codec_name,
                 hw_accel=hw_accel,
                 hw_caps=self.hw_caps,
+                start_time=start_time,
+                end_time=end_time,
             )
         else:
             crf_value = self.preset_group.checkedId()
@@ -1465,6 +1572,8 @@ class MainWindow(QMainWindow):
                 codec_name=codec_name,
                 hw_accel=hw_accel,
                 hw_caps=self.hw_caps,
+                start_time=start_time,
+                end_time=end_time,
             )
 
         self.target_output_file = output_path
@@ -1525,7 +1634,7 @@ class MainWindow(QMainWindow):
 
             elif "out_time" in parsed and latest_time_sec is None:
                 sec = parse_time_str_to_seconds(parsed["out_time"])
-                if sec > 0:
+                if sec is not None and sec > 0:
                     latest_time_sec = sec
 
             if "fps" in parsed and parsed["fps"] != "0.0":
@@ -1534,7 +1643,7 @@ class MainWindow(QMainWindow):
                 latest_speed = parsed["speed"]
 
         if latest_time_sec is not None:
-            total_sec = max(1.0, self.current_metadata.duration_seconds)
+            total_sec = max(1.0, self.current_run_duration)
             percent = min(100, max(0, int((latest_time_sec / total_sec) * 100)))
 
             self.progress_bar.setValue(percent)
